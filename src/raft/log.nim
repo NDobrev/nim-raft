@@ -34,10 +34,8 @@ type
     config*: RaftConfig
     snapshotId*: RaftSnapshotId
 
-
-
-func initRaftLog*(snapshot: RaftSnapshot, entires: seq[LogEntry] = @[]): RaftLog =
-  var log = RaftLog()
+func init*(T: type RaftLog, snapshot: RaftSnapshot, entires: seq[LogEntry] = @[]): T =
+  var log = T()
   if entires.len == 0:
     log.firstIndex = snapshot.index + 1
   else:
@@ -56,7 +54,6 @@ func initRaftLog*(snapshot: RaftSnapshot, entires: seq[LogEntry] = @[]): RaftLog
       else:
         log.prevConfigIndex = log.logEntries[i].index
     
-
   assert log.firstIndex > 0
   return log
 

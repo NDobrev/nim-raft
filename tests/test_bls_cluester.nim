@@ -38,7 +38,7 @@ type
     signature: SignedShare
 
   BLSTestNode* = ref object
-    stm: RaftStateMachine
+    stm: RaftStateMachineRef
     keyShare: SecretShare
     us: UserState
     blockCommunication: bool
@@ -255,10 +255,10 @@ proc createBLSCluster(ids: seq[RaftnodeId], now: times.DateTime, k: int, n: int,
 
   for i in 0..<config.currentSet.len:
       let id = config.currentSet[i]
-      var log = initRaftLog(RaftSnapshot(index: 1, config: config))
+      var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
       #echo $log
       cluster.nodes[id] =   BLSTestNode(
-          stm: initRaftStateMachine(id, 0, log, 0, now, initRand(i + 42)),
+          stm: RaftStateMachineRef.new(id, 0, log, 0, now, initRand(i + 42)),
           keyShare: blsShares[i],
           blockCommunication: false,
           clusterPublicKey: pk,

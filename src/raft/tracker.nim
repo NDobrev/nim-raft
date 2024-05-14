@@ -20,14 +20,14 @@ type
     current*: RaftElectionTracker
     previous*: Option[RaftElectionTracker]
 
-  RaftFollowerProgress = seq[RaftFollowerProgressTracker]
+  RaftFollowerProgress = seq[RaftFollowerProgressTrackerRef]
 
   RaftTracker* = ref object
     progress*: RaftFollowerProgress
     current*: seq[RaftNodeId]
     previous*: seq[RaftNodeId]
   
-  RaftFollowerProgressTracker* = ref object
+  RaftFollowerProgressTrackerRef* = ref object
     id*: RaftNodeId
     nextIndex*: RaftLogIndex
     # Index of the highest log entry known to be replicated to this server.
@@ -36,36 +36,30 @@ type
     replayedIndex: RaftLogIndex
     lastMessageAt*: times.DateTime
 
-  MatchSeq* = ref object
+  MatchSeqRef = ref object
     match: seq[RaftLogIndex]
     count: int
     previousCommitIndex: RaftLogIndex
 
-func initMatchSeq(previousCommitIndex: RaftLogIndex): MatchSeq =
-  result = MatchSeq()
-  result.previousCommitIndex = previousCommitIndex
-  result.count = 0
-  return result
+func new(T: type MatchSeqRef, previousCommitIndex: RaftLogIndex): T =
+  T(previousCommitIndex: previousCommitIndex,count: 0)
 
-func add(ms: var MatchSeq, index:RaftLogIndex) =
+func add(ms: var MatchSeqRef, index:RaftLogIndex) =
   if index > ms.previousCommitIndex:
     ms.count += 1
   ms.match.add(index)
 
-func committed(ms: var MatchSeq): bool = 
+func committed(ms: var MatchSeqRef): bool = 
   return ms.count >= int(ms.match.len / 2) + 1
 
-func commitIndex(ms: var MatchSeq): RaftLogIndex =
+func commitIndex(ms: var MatchSeqRef): RaftLogIndex =
     var p = int((ms.match.len - 1) / 2)
     var matchCopy = ms.match
     matchCopy.sort()
     return matchCopy[p]
 
-func initElectionTracker*(nodes: seq[RaftNodeId]): RaftElectionTracker =
-  var r = RaftElectionTracker()
-  r.all = nodes
-  r.granted = 0
-  return r
+func init*(T:type RaftElectionTracker, nodes: seq[RaftNodeId]): T =
+  RaftElectionTracker(all: nodes, granted: 0)
 
 func registerVote*(ret: var RaftElectionTracker, nodeId: RaftNodeId, granted: bool): bool =
   if not ret.all.contains nodeId:
@@ -91,12 +85,15 @@ func tallyVote*(ret: var RaftElectionTracker): RaftElectionResult =
 func contains(ret: var RaftElectionTracker, id: RaftNodeId): bool =
   ret.all.contains(id)
 
-func initVotes*(config: RaftConfig): RaftVotes =
+func init*(T: type RaftVotes, config: RaftConfig): T =
   let allNodes = config.currentSet & config.previousSet
-  var r = RaftVotes(voters: allNodes, current: initElectionTracker(config.currentSet))
+  var r = T(voters: allNodes, current: RaftElectionTracker.init(config.currentSet))
   if config.isJoint:
-    r.previous = some(initElectionTracker(config.previousSet))
+    r.previous = some(RaftElectionTracker.init(config.previousSet))
   return r
+
+proc `=copy`*(d: var RaftVotes; src: RaftVotes) {.error.} =
+ discard
 
 func registerVote*(rv: var RaftVotes, nodeId: RaftNodeId, granted: bool): bool =
   var success = rv.current.registerVote(nodeId, granted)
@@ -117,17 +114,17 @@ func contains*(rv: var RaftVotes, id: RaftNodeId): bool =
     return true
   return rv.previous.isSome and rv.previous.get.contains(id)
 
-func find*(ls: RaftTracker, id: RaftnodeId): Option[RaftFollowerProgressTracker] =
+func find*(ls: RaftTracker, id: RaftnodeId): Option[RaftFollowerProgressTrackerRef] =
   for follower in ls.progress:
     if follower.id == id:
       return some(follower)
-  return none(RaftFollowerProgressTracker)
+  return none(RaftFollowerProgressTrackerRef)
 
-func initFollowerProgressTracker*(follower: RaftNodeId, nextIndex: RaftLogIndex, now: times.DateTime): RaftFollowerProgressTracker =
-  return RaftFollowerProgressTracker(id: follower, nextIndex: nextIndex, matchIndex: 0, commitIndex: 0, replayedIndex: 0, lastMessageAt: now)
+func new*(T: type RaftFollowerProgressTrackerRef, follower: RaftNodeId, nextIndex: RaftLogIndex, now: times.DateTime): T =
+  T(id: follower, nextIndex: nextIndex, matchIndex: 0, commitIndex: 0, replayedIndex: 0, lastMessageAt: now)
 
-func initFollowerProgressTracker*(follower: RaftNodeId, nextIndex: RaftLogIndex): RaftFollowerProgressTracker =
-  return RaftFollowerProgressTracker(id: follower, nextIndex: nextIndex, matchIndex: 0, commitIndex: 0, replayedIndex: 0)
+func new*(T: type RaftFollowerProgressTrackerRef, follower: RaftNodeId, nextIndex: RaftLogIndex): T =
+  T(id: follower, nextIndex: nextIndex, matchIndex: 0, commitIndex: 0, replayedIndex: 0)
 
 func find(s: var RaftFollowerProgress, what: RaftNodeId): int =
   result = -1
@@ -151,7 +148,7 @@ func setConfig*(tracker: var RaftTracker, config: RaftConfig, nextIndex: RaftLog
     if oldp != -1:
         tracker.progress.add(oldProgress[oldp])
     else:
-        let progress = initFollowerProgressTracker(s, nextIndex, now)
+        let progress = RaftFollowerProgressTrackerRef.new(s, nextIndex, now)
         tracker.progress.add(progress)
   
   if config.isJoint:
@@ -165,18 +162,17 @@ func setConfig*(tracker: var RaftTracker, config: RaftConfig, nextIndex: RaftLog
       if oldp != -1:
           tracker.progress.add(oldProgress[oldp])
       else:
-          tracker.progress.add(initFollowerProgressTracker(s, nextIndex, now))
+          tracker.progress.add(RaftFollowerProgressTrackerRef.new(s, nextIndex, now))
 
-func initTracker*(config: RaftConfig, nextIndex: RaftLogIndex, now: times.DateTime): RaftTracker =
-  var tracker = RaftTracker()
-  
+func init*(T: type RaftTracker, config: RaftConfig, nextIndex: RaftLogIndex, now: times.DateTime): T =
+  var tracker = T()
   tracker.setConfig(config, nextIndex, now)
   return tracker
 
 func committed*(tracker: RaftTracker, previousCommitIndex: int): RaftLogIndex =
-  var current = initMatchSeq(previousCommitIndex)
+  var current = MatchSeqRef.new(previousCommitIndex)
   if tracker.previous.len != 0:
-    var previous = initMatchSeq(previousCommitIndex)
+    var previous = MatchSeqRef.new(previousCommitIndex)
     for progress in tracker.progress:
       if tracker.current.contains(progress.id):
         current.add(progress.matchIndex)
@@ -194,12 +190,12 @@ func committed*(tracker: RaftTracker, previousCommitIndex: int): RaftLogIndex =
     return current.commitIndex
  
 
-func accepted*(fpt: var RaftFollowerProgressTracker, index: RaftLogIndex)=
+func accepted*(fpt: var RaftFollowerProgressTrackerRef, index: RaftLogIndex)=
   fpt.matchIndex = max(fpt.matchIndex, index)
   fpt.nextIndex = max(fpt.nextIndex, index)
 
 
-func `$`*(progress: RaftFollowerProgressTracker): string =
+func `$`*(progress: RaftFollowerProgressTrackerRef): string =
   return fmt"""
     Progress status
     id: {progress.id}

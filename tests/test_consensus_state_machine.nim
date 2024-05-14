@@ -29,7 +29,7 @@ proc red*(s: string): string = "\e[31m" & s & "\e[0m"
 
 type
   TestNode* = object
-    sm: RaftStateMachine
+    sm: RaftStateMachineRef
     markedForDelection: bool
 
   TestCluster* = object
@@ -61,7 +61,7 @@ var test_second_ids_1 = @[
   RaftnodeId(id: "aaaaaaaa-f17b-4682-aaef-a19cc9f356fb"),
 ]
 
-func poll(node: var TestNode): RaftStateMachineOutput =
+func poll(node: var TestNode): RaftStateMachineRefOutput =
   return node.sm.poll()
 
 func advance(node: var TestNode, msg: RaftRpcMessage, now: times.DateTime) =
@@ -85,14 +85,14 @@ proc createCluster(ids: seq[RaftnodeId], now: times.DateTime) : TestCluster =
   cluster.nodes = initTable[RaftnodeId, TestNode]()
   for i in 0..<config.currentSet.len:
       let id = config.currentSet[i]
-      var log = initRaftLog(RaftSnapshot(index: 0, config: config))
-      var node = TestNode(sm: initRaftStateMachine(id, 0, log, 0, now, initRand(i + 42)), markedForDelection: false)
+      var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+      var node = TestNode(sm: RaftStateMachineRef.new(id, 0, log, 0, now, initRand(i + 42)), markedForDelection: false)
       cluster.nodes[id] = node
   return cluster
 
 proc addNodeToCluster(tc: var TestCluster, id: RaftnodeId, now: times.DateTime, config: RaftConfig, randomGenerator: Rand = initRand(42)) =
-  var log = initRaftLog(RaftSnapshot(index: 0, config: config))
-  var node = TestNode(sm: initRaftStateMachine(id, 0, log, 0, now, randomGenerator), markedForDelection: false)
+  var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+  var node = TestNode(sm: RaftStateMachineRef.new(id, 0, log, 0, now, randomGenerator), markedForDelection: false)
   if tc.nodes.contains(id):
     raise newException(AssertionDefect, "Adding node to the cluster that already exist")
   tc.nodes[id] = node
@@ -191,8 +191,8 @@ proc advanceConfigChange(tc: var TestCluster, now: times.DateTime, until: times.
     tc.advance(timeNow, logLevel)
   return timeNow
 
-func getLeader(tc: TestCluster): Option[RaftStateMachine] =
-  var leader = none(RaftStateMachine)
+func getLeader(tc: TestCluster): Option[RaftStateMachineRef] =
+  var leader = none(RaftStateMachineRef)
   for id, node in tc.nodes:
     if node.sm.state.isLeader:
       if not leader.isSome() or leader.get().term < node.sm.term:
@@ -268,24 +268,24 @@ proc consensusstatemachineMain*() =
     test "tick empty state machine":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
       
-      var log = initRaftLog(RaftSnapshot(index: 1, config: config))
-      var sm = initRaftStateMachine(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
+      var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+      var sm = RaftStateMachineRef.new(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
       timeNow += 5.milliseconds
       sm.tick(timeNow)
 
   suite "Entry log tests":
     test "append entry as leadeer":
-      var log = initRaftLog(RaftSnapshot(index: 2, config: config))
+      var log = RaftLog.init(RaftSnapshot(index: 2, config: config))
       check log.lastIndex == 2
     test "append entry as leadeer":
-      var log = initRaftLog(RaftSnapshot(index: 0, config: config))
+      var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
       log.appendAsLeader(0, 1, Command())
       log.appendAsLeader(0, 2, Command())
       check log.lastTerm() == 0
       log.appendAsLeader(1, 2, Command())
       check log.lastTerm() == 1
     test "append entry as follower":
-      var log = initRaftLog(RaftSnapshot(index: 0, config: config))
+      var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
       check log.nextIndex == 1
       log.appendAsFollower(0, 1, Command())
       check log.lastTerm() == 0
@@ -323,23 +323,23 @@ proc consensusstatemachineMain*() =
 
   suite "Single node election tracker":
     test "unknown":
-      var votes = initVotes(test_ids_1.createConfigFromIds)
+      var votes = RaftVotes.init(test_ids_1.createConfigFromIds)
       check votes.tallyVote == RaftElectionResult.Unknown
 
     test "win election":
-      var votes = initVotes(test_ids_1.createConfigFromIds)
+      var votes = RaftVotes.init(test_ids_1.createConfigFromIds)
       discard votes.registerVote(test_ids_1[0], true)
 
       check votes.tallyVote == RaftElectionResult.Won
     test "lost election":
-      var votes = initVotes(test_ids_1.createConfigFromIds)
+      var votes = RaftVotes.init(test_ids_1.createConfigFromIds)
       discard votes.registerVote(test_ids_1[0], false)
       echo votes.tallyVote
       check votes.tallyVote == RaftElectionResult.Lost
 
   suite "3 nodes election tracker":
     test "win election":
-      var votes = initVotes(test_ids_3.createConfigFromIds)
+      var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
       check votes.tallyVote == RaftElectionResult.Unknown
       discard votes.registerVote(test_ids_3[0], true)
       check votes.tallyVote == RaftElectionResult.Unknown
@@ -347,7 +347,7 @@ proc consensusstatemachineMain*() =
       check votes.tallyVote == RaftElectionResult.Won
 
     test "lose election":
-      var votes = initVotes(test_ids_3.createConfigFromIds)
+      var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
       check votes.tallyVote == RaftElectionResult.Unknown
       discard votes.registerVote(test_ids_3[0], false)
       check votes.tallyVote == RaftElectionResult.Unknown
@@ -357,7 +357,7 @@ proc consensusstatemachineMain*() =
       check votes.tallyVote == RaftElectionResult.Won
 
     test "lose election":
-      var votes = initVotes(test_ids_3.createConfigFromIds)
+      var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
       check votes.tallyVote == RaftElectionResult.Unknown
       discard votes.registerVote(test_ids_3[0], false)
       check votes.tallyVote == RaftElectionResult.Unknown
@@ -365,7 +365,7 @@ proc consensusstatemachineMain*() =
       check votes.tallyVote == RaftElectionResult.Lost
 
     test "lose election":
-      var votes = initVotes(test_ids_3.createConfigFromIds)
+      var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
       check votes.tallyVote == RaftElectionResult.Unknown
       discard votes.registerVote(test_ids_3[0], true)
       check votes.tallyVote == RaftElectionResult.Unknown
@@ -379,8 +379,8 @@ proc consensusstatemachineMain*() =
     test "election":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
       var config = createConfigFromIds(test_ids_1)
-      var log = initRaftLog(RaftSnapshot(index: 1, config: config))
-      var sm = initRaftStateMachine(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
+      var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+      var sm = RaftStateMachineRef.new(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
       check sm.state.isFollower
       timeNow +=  99.milliseconds
       sm.tick(timeNow)
@@ -406,8 +406,8 @@ proc consensusstatemachineMain*() =
     test "append entry":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
       var config = createConfigFromIds(test_ids_1)
-      var log = initRaftLog(RaftSnapshot(index: 1, config: config))
-      var sm = initRaftStateMachine(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
+      var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+      var sm = RaftStateMachineRef.new(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
       check sm.state.isFollower
       timeNow +=  1000.milliseconds
       sm.tick(timeNow)
@@ -438,9 +438,9 @@ proc consensusstatemachineMain*() =
       let id1 = test_ids_3[0]
       let id2 = test_ids_3[1]
       var config = createConfigFromIds(@[id1, id2])
-      var log = initRaftLog(RaftSnapshot(index: 1, config: config))
+      var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var sm = initRaftStateMachine(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
+      var sm = RaftStateMachineRef.new(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
       check sm.state.isFollower
       timeNow += 601.milliseconds
       sm.tick(timeNow)
@@ -493,9 +493,9 @@ proc consensusstatemachineMain*() =
         let id2 = test_ids_3[1]
         let id3 = test_ids_3[2]
         var config = createConfigFromIds(test_ids_3)
-        var log = initRaftLog(RaftSnapshot(index: 1, config: config))
+        var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
         var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-        var sm = initRaftStateMachine(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
+        var sm = RaftStateMachineRef.new(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
         check sm.state.isFollower
         timeNow += 501.milliseconds
         sm.tick(timeNow)
@@ -530,9 +530,9 @@ proc consensusstatemachineMain*() =
         let id2 = test_ids_3[1]
         let id3 = test_ids_3[2]
         var config = createConfigFromIds(test_ids_3)
-        var log = initRaftLog(RaftSnapshot(index: 1, config: config))
+        var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
         var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-        var sm = initRaftStateMachine(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
+        var sm = RaftStateMachineRef.new(test_ids_1[0], 0, log, 0, timeNow, initRand(42))
         check sm.state.isFollower
         timeNow += 501.milliseconds
         sm.tick(timeNow)

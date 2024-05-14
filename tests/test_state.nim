@@ -5,7 +5,7 @@ import ../src/raft
 import std/[times]
 
 proc stateMain() =
-    suite "RaftStateMachineState Tests":
+    suite "RaftStateMachineRefState Tests":
 
         test "initLeader should initialize the state as Leader":
             var cfg = RaftConfig()

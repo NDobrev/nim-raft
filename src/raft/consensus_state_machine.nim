@@ -99,7 +99,7 @@ type
     of InstallSnapshot: installSnapshot*: RaftInstallSnapshot
     of SnapshotReply: snapshotReply*: RaftSnapshotReply
 
-  RaftStateMachineOutput* = object
+  RaftStateMachineRefOutput* = object
     logEntries*: seq[LogEntry]
     # Entries that should be applyed to the "User" State machine
     committed*: seq[LogEntry]
@@ -113,13 +113,13 @@ type
     snapshotsToDrop: seq[RaftSnapshot]
 
 
-  RaftStateMachine* = ref object
+  RaftStateMachineRef* = ref object
     myId*: RaftNodeId
     term*: RaftNodeTerm
     commitIndex*: RaftLogIndex
     toCommit: RaftLogIndex
     log*: RaftLog
-    output: RaftStateMachineOutput
+    output: RaftStateMachineRefOutput
     lastUpdate: times.Time
     votedFor: RaftNodeId
     pingLeader: bool
@@ -133,49 +133,49 @@ type
     randomGenerator: Rand
 
     observedState: RaftLastPollState
-    state*: RaftStateMachineState
+    state*: RaftStateMachineRefState
 
-func eq(ps: RaftLastPollState, sm: RaftStateMachine): bool =
+func eq(ps: RaftLastPollState, sm: RaftStateMachineRef): bool =
   return ps.term() == sm.term and
   ps.votedFor() == sm.votedFor and
   ps.commitIndex() == sm.commitIndex and
   ps.persistedIndex() == sm.log.lastIndex
 
-func leader*(sm: var RaftStateMachine): var LeaderState =
+func leader*(sm: var RaftStateMachineRef): var LeaderState =
   return sm.state.leader
 
-func follower*(sm: var RaftStateMachine): var FollowerState =
+func follower*(sm: var RaftStateMachineRef): var FollowerState =
   return sm.state.follower
 
-func candidate*(sm: var RaftStateMachine): var CandidateState =
+func candidate*(sm: var RaftStateMachineRef): var CandidateState =
   return sm.state.candidate
 
-func addDebugLogEntry(sm: RaftStateMachine, level: DebugLogLevel, msg: string) =
+func addDebugLogEntry(sm: RaftStateMachineRef, level: DebugLogLevel, msg: string) =
   sm.output.debugLogs.add(DebugLogEntry(time: sm.timeNow, state: sm.state.state, level: level, msg: msg, nodeId: sm.myId))
 
-func debug*(sm: RaftStateMachine, log: string) = 
+func debug*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Debug, log)
 
-func warning*(sm: RaftStateMachine, log: string) = 
+func warning*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Warning, log)
 
-func error*(sm: RaftStateMachine, log: string) = 
+func error*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Error, log)
 
-func info*(sm: RaftStateMachine, log: string) = 
+func info*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Info, log)
 
-func critical*(sm: RaftStateMachine, log: string) = 
+func critical*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Critical, log)
 
-func observe*(ps: var RaftLastPollState, sm: RaftStateMachine) =
+func observe*(ps: var RaftLastPollState, sm: RaftStateMachineRef) =
   ps.setTerm sm.term
   ps.setVotedFor sm.votedFor
   ps.setCommitIndex sm.commitIndex
   ps.setPersistedIndex sm.log.lastIndex
 
 
-func replicationStatus*(sm: var RaftStateMachine): string =
+func replicationStatus*(sm: var RaftStateMachineRef): string =
   var report = "\nReplication report\n"
   if not sm.state.isLeader:
     return report
@@ -184,11 +184,11 @@ func replicationStatus*(sm: var RaftStateMachine): string =
     report = report & "=============\n" & $p
   return report
 
-func resetElectionTimeout*(sm: var RaftStateMachine) =
+func resetElectionTimeout*(sm: var RaftStateMachineRef) =
   sm.randomizedElectionTime = sm.electionTimeout + times.initDuration(milliseconds = 100 + sm.randomGenerator.rand(200))
 
-func initRaftStateMachine*(id: RaftnodeId, currentTerm: RaftNodeTerm, log: RaftLog, commitIndex: RaftLogIndex, now: times.DateTime, randomGenerator: Rand): RaftStateMachine = 
-  var sm =  RaftStateMachine()
+func new*(T: type RaftStateMachineRef, id: RaftnodeId, currentTerm: RaftNodeTerm, log: RaftLog, commitIndex: RaftLogIndex, now: times.DateTime, randomGenerator: Rand): T = 
+  var sm = T()
   sm.term = currentTerm
   sm.log = log
   sm.commitIndex = max(sm.commitIndex, log.snapshot.index)
@@ -204,33 +204,33 @@ func initRaftStateMachine*(id: RaftnodeId, currentTerm: RaftNodeTerm, log: RaftL
   sm.observedState.observe(sm)
   return sm
 
-func currentLeader(sm: var RaftStateMachine): RaftnodeId =
+func currentLeader(sm: var RaftStateMachineRef): RaftnodeId =
   if sm.state.isFollower:
     return sm.state.follower.leader
   return RaftnodeId()
 
-func findFollowerProggressById(sm: var RaftStateMachine, id: RaftNodeId): Option[RaftFollowerProgressTracker] =
+func findFollowerProggressById(sm: var RaftStateMachineRef, id: RaftNodeId): Option[RaftFollowerProgressTrackerRef] =
   return sm.leader.tracker.find(id)
 
-func sendToImpl*(sm: var RaftStateMachine, id: RaftNodeId, request: RaftRpcAppendRequest) =
+func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftRpcAppendRequest) =
   sm.output.messages.add(RaftRpcMessage(currentTerm: sm.term, receiver: id, sender: sm.myId, kind: RaftRpcMessageType.AppendRequest, appendRequest: request))
 
-func sendToImpl*(sm: var RaftStateMachine, id: RaftNodeId, request: RaftRpcAppendReply) =
+func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftRpcAppendReply) =
   sm.output.messages.add(RaftRpcMessage(currentTerm: sm.term, receiver: id, sender: sm.myId, kind: RaftRpcMessageType.AppendReply, appendReply: request))
 
-func sendToImpl*(sm: var RaftStateMachine, id: RaftNodeId, request: RaftRpcVoteRequest) =
+func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftRpcVoteRequest) =
   sm.output.messages.add(RaftRpcMessage(currentTerm: sm.term, receiver: id, sender: sm.myId, kind: RaftRpcMessageType.VoteRequest, voteRequest: request))
 
-func sendToImpl*(sm: var RaftStateMachine, id: RaftNodeId, request: RaftRpcVoteReply) =
+func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftRpcVoteReply) =
   sm.output.messages.add(RaftRpcMessage(currentTerm: sm.term, receiver: id, sender: sm.myId, kind: RaftRpcMessageType.VoteReply, voteReply: request))
 
-func sendToImpl*(sm: var RaftStateMachine, id: RaftNodeId, request: RaftSnapshotReply) =
+func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftSnapshotReply) =
   sm.output.messages.add(RaftRpcMessage(currentTerm: sm.term, receiver: id, sender: sm.myId, kind: RaftRpcMessageType.SnapshotReply, snapshotReply: request))
 
-func sendToImpl*(sm: var RaftStateMachine, id: RaftNodeId, request: RaftInstallSnapshot) =
+func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftInstallSnapshot) =
   sm.output.messages.add(RaftRpcMessage(currentTerm: sm.term, receiver: id, sender: sm.myId, kind: RaftRpcMessageType.InstallSnapshot, installSnapshot: request))
 
-func applySnapshot(sm: var RaftStateMachine, snapshot: RaftSnapshot): bool = 
+func applySnapshot(sm: var RaftStateMachineRef, snapshot: RaftSnapshot): bool = 
   sm.debug "Applay snapshot" & $snapshot
 
   let current = sm.log.snapshot
@@ -242,7 +242,7 @@ func applySnapshot(sm: var RaftStateMachine, snapshot: RaftSnapshot): bool =
   sm.output.applyedSnapshots = some(snapshot)
   sm.log.applySnapshot(snapshot)
 
-func sendTo[MsgType](sm: var RaftStateMachine, id: RaftNodeId, request: MsgType) =
+func sendTo[MsgType](sm: var RaftStateMachineRef, id: RaftNodeId, request: MsgType) =
   if sm.state.isLeader:
     var follower = sm.findFollowerProggressById(id)
     if follower.isSome:
@@ -251,10 +251,10 @@ func sendTo[MsgType](sm: var RaftStateMachine, id: RaftNodeId, request: MsgType)
       sm.warning "Follower not found: " & $id 
   sm.sendToImpl(id, request)
 
-func createVoteRequest*(sm: var RaftStateMachine): RaftRpcMessage = 
+func createVoteRequest*(sm: var RaftStateMachineRef): RaftRpcMessage = 
   return RaftRpcMessage(currentTerm: sm.term, sender: sm.myId, kind: VoteRequest, voteRequest: RaftRpcVoteRequest())
 
-func replicateTo*(sm: var RaftStateMachine, follower: RaftFollowerProgressTracker) =
+func replicateTo*(sm: var RaftStateMachineRef, follower: RaftFollowerProgressTrackerRef) =
   if follower.nextIndex > sm.log.lastIndex:
     return
 
@@ -274,16 +274,16 @@ func replicateTo*(sm: var RaftStateMachine, follower: RaftFollowerProgressTracke
   follower.nextIndex += 1
   sm.sendTo(follower.id, request)
      
-func replicate*(sm: var RaftStateMachine) =
+func replicate*(sm: var RaftStateMachineRef) =
   if sm.state.isLeader:
     for followerIndex in 0..<sm.leader.tracker.progress.len:
       if sm.myId != sm.leader.tracker.progress[followerIndex].id:
         sm.replicateTo(sm.leader.tracker.progress[followerIndex])
 
-func configuration*(sm: var RaftStateMachine): RaftConfig = 
+func configuration*(sm: var RaftStateMachineRef): RaftConfig = 
   return sm.log.configuration
 
-func addEntry(sm: var RaftStateMachine, entry: LogEntry) = {.cast(noSideEffect).}:
+func addEntry(sm: var RaftStateMachineRef, entry: LogEntry) = {.cast(noSideEffect).}:
   var tmpEntry = entry
   if not sm.state.isLeader:
     sm.error "Only the leader can handle new entries"
@@ -310,17 +310,17 @@ func addEntry(sm: var RaftStateMachine, entry: LogEntry) = {.cast(noSideEffect).
     sm.leader.tracker.setConfig(sm.log.configuration, sm.log.lastIndex, sm.timeNow)
     
 
-func addEntry*(sm: var RaftStateMachine, command: Command) =
+func addEntry*(sm: var RaftStateMachineRef, command: Command) =
   sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletCommand, command: command))
 
-func addEntry*(sm: var RaftStateMachine, config: RaftConfig) = {.cast(noSideEffect).}:
+func addEntry*(sm: var RaftStateMachineRef, config: RaftConfig) = {.cast(noSideEffect).}:
   sm.debug "new config entry" & $config.currentSet
   sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletConfig, config: config))
 
-func addEntry*(sm: var RaftStateMachine, dummy: Empty) =
+func addEntry*(sm: var RaftStateMachineRef, dummy: Empty) =
   sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletEmpty, empty: true))
 
-func becomeFollower*(sm: var RaftStateMachine, leaderId: RaftNodeId) =
+func becomeFollower*(sm: var RaftStateMachineRef, leaderId: RaftNodeId) =
   if sm.myId == leaderId:
     sm.error "Can't be follower of itself"
   sm.output.stateChange = not sm.state.isFollower
@@ -329,7 +329,7 @@ func becomeFollower*(sm: var RaftStateMachine, leaderId: RaftNodeId) =
     sm.pingLeader = false
     sm.lastElectionTime = sm.timeNow
 
-func becomeLeader*(sm: var RaftStateMachine) =
+func becomeLeader*(sm: var RaftStateMachineRef) =
   if sm.state.isLeader:
     sm.error "The leader can't become leader second time"
     return
@@ -343,7 +343,7 @@ func becomeLeader*(sm: var RaftStateMachine) =
   sm.lastElectionTime = sm.timeNow  
   return
 
-func becomeCandidate*(sm: var RaftStateMachine) =
+func becomeCandidate*(sm: var RaftStateMachineRef) =
   #TODO: implement
   if not sm.state.isCandidate:
     sm.output.stateChange = true
@@ -374,7 +374,7 @@ func becomeCandidate*(sm: var RaftStateMachine) =
   
   return
 
-func heartbeat(sm: var RaftStateMachine, follower: var RaftFollowerProgressTracker) =
+func heartbeat(sm: var RaftStateMachineRef, follower: var RaftFollowerProgressTrackerRef) =
   sm.info "heartbeat " & $follower.nextIndex
   var previousTerm = 0
   if sm.log.lastIndex > 1:
@@ -386,7 +386,7 @@ func heartbeat(sm: var RaftStateMachine, follower: var RaftFollowerProgressTrack
       entries: @[])
   sm.sendTo(follower.id, request)
 
-func tickLeader*(sm: var RaftStateMachine, now: times.DateTime) =
+func tickLeader*(sm: var RaftStateMachineRef, now: times.DateTime) =
   sm.timeNow = now
 
   if sm.lastElectionTime - sm.timeNow > sm.electionTimeout:
@@ -406,7 +406,7 @@ func tickLeader*(sm: var RaftStateMachine, now: times.DateTime) =
       if now - follower.lastMessageAt > sm.heartbeatTime:
         sm.heartbeat(follower)
 
-func tick*(sm: var RaftStateMachine, now: times.DateTime) =
+func tick*(sm: var RaftStateMachineRef, now: times.DateTime) =
     sm.info "Term: " & $sm.term & " commit idx " & $sm.commitIndex & " Time since last update: " & $(now - sm.timeNow).inMilliseconds & "ms time until election:" & $(sm.randomizedElectionTime - (sm.timeNow - sm.lastElectionTime)).inMilliseconds & "ms"
     sm.timeNow = now
     if sm.state.isLeader:
@@ -415,7 +415,7 @@ func tick*(sm: var RaftStateMachine, now: times.DateTime) =
       sm.debug "Become candidate"
       sm.becomeCandidate()
 
-func commit(sm: var RaftStateMachine) =
+func commit(sm: var RaftStateMachineRef) =
   if not sm.state.isLeader:
     return
   
@@ -437,7 +437,7 @@ func commit(sm: var RaftStateMachine) =
       sm.log.appendAsLeader(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletConfig, config: config))
       sm.leader.tracker.setConfig(config, sm.log.lastIndex, sm.timeNow)
 
-func poll*(sm: var RaftStateMachine):  RaftStateMachineOutput =
+func poll*(sm: var RaftStateMachineRef):  RaftStateMachineRefOutput =
   # Should initiate replication if we have new entries
   if sm.state.isLeader:
     sm.replicate()
@@ -462,7 +462,7 @@ func poll*(sm: var RaftStateMachine):  RaftStateMachineOutput =
     sm.output.votedFor = some(sm.votedFor)
   sm.observedState.observe(sm)
   let output = sm.output
-  sm.output = RaftStateMachineOutput()
+  sm.output = RaftStateMachineRefOutput()
   
   if sm.state.isLeader and output.logEntries.len > 0:
     sm.debug "Leader accept index: " & $output.logEntries[output.logEntries.len - 1].index
@@ -473,7 +473,7 @@ func poll*(sm: var RaftStateMachine):  RaftStateMachineOutput =
     sm.commit()
   return output
 
-func appendEntryReply*(sm: var RaftStateMachine, fromId: RaftNodeId, reply: RaftRpcAppendReply) =
+func appendEntryReply*(sm: var RaftStateMachineRef, fromId: RaftNodeId, reply: RaftRpcAppendReply) =
   if not sm.state.isLeader:
     sm.debug "You can't append append reply to the follower"
     return
@@ -502,12 +502,12 @@ func appendEntryReply*(sm: var RaftStateMachine, fromId: RaftNodeId, reply: Raft
   if follower2.isSome:
     sm.replicateTo(follower2.get())
 
-func advanceCommitIdx(sm: var RaftStateMachine, leaderIdx: RaftLogIndex) =
+func advanceCommitIdx(sm: var RaftStateMachineRef, leaderIdx: RaftLogIndex) =
   let newIdx = min(leaderIdx, sm.log.lastIndex)
   if newIdx > sm.commitIndex:
     sm.commitIndex = newIdx
 
-func appendEntry*(sm: var RaftStateMachine, fromId: RaftNodeId, request: RaftRpcAppendRequest) =
+func appendEntry*(sm: var RaftStateMachineRef, fromId: RaftNodeId, request: RaftRpcAppendRequest) =
   if not sm.state.isFollower:
     sm.debug "You can't append append request to the non follower"
     return
@@ -528,7 +528,7 @@ func appendEntry*(sm: var RaftStateMachine, fromId: RaftNodeId, request: RaftRpc
   let responce = RaftRpcAppendReply(term: sm.term, commitIndex: sm.commitIndex, result: RaftRpcCode.Accepted, accepted: accepted)
   sm.sendTo(fromId, responce)  
 
-func requestVote*(sm: var RaftStateMachine, fromId: RaftNodeId, request: RaftRpcVoteRequest) =
+func requestVote*(sm: var RaftStateMachineRef, fromId: RaftNodeId, request: RaftRpcVoteRequest) =
   # TODO: 
   # D-Raft-Extended 
   # 6. The third issue is that removed servers (those not in
@@ -547,7 +547,7 @@ func requestVote*(sm: var RaftStateMachine, fromId: RaftNodeId, request: RaftRpc
     let responce: RaftRpcVoteReply = RaftRpcVoteReply(currentTerm: sm.term, voteGranted: false)
     sm.sendTo(fromId, responce)
 
-func requestVoteReply*(sm: var RaftStateMachine, fromId: RaftNodeId, request: RaftRpcVoteReply) = 
+func requestVoteReply*(sm: var RaftStateMachineRef, fromId: RaftNodeId, request: RaftRpcVoteReply) = 
   if not sm.state.isCandidate:
     sm.debug "Non candidate can't handle votes"
     return
@@ -564,7 +564,7 @@ func requestVoteReply*(sm: var RaftStateMachine, fromId: RaftNodeId, request: Ra
       sm.becomeFollower(RaftNodeId())
 
 
-func installSnapshotReplay(sm: var RaftStateMachine, fromId: RaftnodeId, replay: RaftSnapshotReply) =
+func installSnapshotReplay(sm: var RaftStateMachineRef, fromId: RaftnodeId, replay: RaftSnapshotReply) =
   let follower = sm.findFollowerProggressById(fromId)
   if not follower.isSome:
     return
@@ -572,7 +572,7 @@ func installSnapshotReplay(sm: var RaftStateMachine, fromId: RaftnodeId, replay:
   if replay.success:
     sm.replicateTo(follower.get())
 
-func advance*(sm: var RaftStateMachine, msg: RaftRpcMessage, now: times.DateTime) =
+func advance*(sm: var RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime) =
   
   if msg.currentTerm > sm.term:
     sm.debug "Current node is behind"
