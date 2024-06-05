@@ -29,9 +29,9 @@ type
     SnapshotReply = 5
   
   RaftRpcCode* = enum
-    Rejected = 0,
-    Accepted = 1
-
+    Accepted = 0,
+    Rejected = 1
+    
   DebugLogLevel* = enum
     None = 0
     Critical = 1,
@@ -56,18 +56,18 @@ type
     entries*: seq[LogEntry]
     
   RaftRpcAppendReplyRejected* = object
-    nonMatchingIndex: RaftLogIndex
-    lastIdx: RaftLogIndex
+    nonMatchingIndex*: RaftLogIndex
+    lastIdx*: RaftLogIndex
 
   RaftRpcAppendReplyAccepted* = object
-    lastNewIndex: RaftLogIndex
+    lastNewIndex*: RaftLogIndex
 
   RaftRpcAppendReply* = object
     commitIndex*: RaftLogIndex
     term*: RaftNodeTerm
-    case result: RaftRpcCode:
-      of Accepted: accepted: RaftRpcAppendReplyAccepted
-      of Rejected: rejected: RaftRpcAppendReplyRejected 
+    case result*: RaftRpcCode:
+      of Accepted: accepted*: RaftRpcAppendReplyAccepted
+      of Rejected: rejected*: RaftRpcAppendReplyRejected 
 
   RaftRpcVoteRequest* = object
     currentTerm*: RaftNodeTerm
@@ -80,12 +80,12 @@ type
     voteGranted*: bool
 
   RaftInstallSnapshot* = object
-    term: RaftNodeTerm
-    snapshot: RaftSnapshot
+    term*: RaftNodeTerm
+    snapshot*: RaftSnapshot
 
   RaftSnapshotReply* = object
-    term: RaftNodeTerm
-    success: bool
+    term*: RaftNodeTerm
+    success*: bool
 
   RaftRpcMessage* = object
     currentTerm*: RaftNodeTerm
