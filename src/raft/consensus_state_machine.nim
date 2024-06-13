@@ -363,7 +363,7 @@ func becomeCandidate*(sm: var RaftStateMachineRef) =
     if nodeId == sm.myId:
       sm.debug "register vote for it self "
       discard sm.candidate.votes.registerVote(nodeId, true)
-      sm.votedFor = nodeId
+      sm.votedFor = sm.myId
       continue
 
     let request = RaftRpcVoteRequest(currentTerm: sm.term, lastLogIndex: sm.log.lastIndex, lastLogTerm: sm.log.lastTerm, force: false)
@@ -411,7 +411,7 @@ func tick*(sm: var RaftStateMachineRef, now: times.DateTime) =
     sm.timeNow = now
     if sm.state.isLeader:
       sm.tickLeader(now);
-    elif sm.state.isFollower and sm.timeNow - sm.lastElectionTime > sm.randomizedElectionTime:
+    elif sm.timeNow - sm.lastElectionTime > sm.randomizedElectionTime:
       sm.debug "Become candidate"
       sm.becomeCandidate()
 
