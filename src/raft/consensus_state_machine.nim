@@ -113,7 +113,6 @@ type
     applyedSnapshots: Option[RaftSnapshot]
     snapshotsToDrop: seq[RaftSnapshot]
 
-
   RaftStateMachineRef* = ref object
     myId*: RaftNodeId
     term*: RaftNodeTerm
@@ -151,23 +150,25 @@ func follower*(sm: var RaftStateMachineRef): var FollowerState =
 func candidate*(sm: var RaftStateMachineRef): var CandidateState =
   return sm.state.candidate
 
-func addDebugLogEntry(sm: RaftStateMachineRef, level: DebugLogLevel, msg: string) =
-  if false:
-    sm.output.debugLogs.add(DebugLogEntry(time: sm.timeNow, state: sm.state.state, term: sm.term,level: level, msg: msg, nodeId: sm.myId))
+const loglevel{.intdefine.}:int = int(DebugLogLevel.None)
 
-func debug*(sm: RaftStateMachineRef, log: string) = 
+template addDebugLogEntry(sm: RaftStateMachineRef, levelArg: DebugLogLevel, message: string) =
+  if loglevel > int(levelArg):
+    sm.output.debugLogs.add(DebugLogEntry(time: sm.timeNow, state: sm.state.state, term: sm.term,level: levelArg, msg: message, nodeId: sm.myId))
+
+template debug*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Debug, log)
 
-func warning*(sm: RaftStateMachineRef, log: string) = 
+template warning*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Warning, log)
 
-func error*(sm: RaftStateMachineRef, log: string) = 
+template error*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Error, log)
 
-func info*(sm: RaftStateMachineRef, log: string) = 
+template info*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Info, log)
 
-func critical*(sm: RaftStateMachineRef, log: string) = 
+template critical*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Critical, log)
 
 func observe*(ps: var RaftLastPollState, sm: RaftStateMachineRef) =
@@ -461,6 +462,7 @@ func poll*(sm: var RaftStateMachineRef):  RaftStateMachineRefOutput =
 
   let observedCommitIndex = max(sm.observedState.commitIndex, sm.log.snapshot.index)
   if observedCommitIndex < sm.commitIndex:
+    assert(sm.output.committed.len == 0)
     for i in (observedCommitIndex + 1)..<(sm.commitIndex + 1):
       sm.output.committed.add(sm.log.getEntryByIndex(i))
 
