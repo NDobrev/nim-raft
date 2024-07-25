@@ -45,6 +45,7 @@ type
     level*: DebugLogLevel
     time*: times.DateTime
     nodeId*: RaftnodeId
+    term*: RaftNodeTerm
     state*: RaftNodeState
     msg*: string
 
@@ -151,7 +152,8 @@ func candidate*(sm: var RaftStateMachineRef): var CandidateState =
   return sm.state.candidate
 
 func addDebugLogEntry(sm: RaftStateMachineRef, level: DebugLogLevel, msg: string) =
-  sm.output.debugLogs.add(DebugLogEntry(time: sm.timeNow, state: sm.state.state, level: level, msg: msg, nodeId: sm.myId))
+  if false:
+    sm.output.debugLogs.add(DebugLogEntry(time: sm.timeNow, state: sm.state.state, term: sm.term,level: level, msg: msg, nodeId: sm.myId))
 
 func debug*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Debug, log)
@@ -248,7 +250,8 @@ func sendTo[MsgType](sm: var RaftStateMachineRef, id: RaftNodeId, request: MsgTy
     if follower.isSome:
       follower.get().lastMessageAt = sm.timeNow
     else:
-      sm.warning "Follower not found: " & $id 
+      sm.warning "Follower not found: " & $id
+  sm.debug "Sent to " & $request
   sm.sendToImpl(id, request)
 
 func createVoteRequest*(sm: var RaftStateMachineRef): RaftRpcMessage = 
@@ -328,6 +331,7 @@ func becomeFollower*(sm: var RaftStateMachineRef, leaderId: RaftNodeId) =
   if leaderId != RaftnodeId():
     sm.pingLeader = false
     sm.lastElectionTime = sm.timeNow
+  sm.debug "Become follower with leader" & $leaderId
 
 func becomeLeader*(sm: var RaftStateMachineRef) =
   if sm.state.isLeader:
@@ -358,7 +362,7 @@ func becomeCandidate*(sm: var RaftStateMachineRef) =
       sm.becomeFollower(RaftNodeId())
       return
 
-  sm.term += 1
+  sm.term = sm.term + 1
   for nodeId in sm.candidate.votes.voters:
     if nodeId == sm.myId:
       sm.debug "register vote for it self "
@@ -377,11 +381,13 @@ func becomeCandidate*(sm: var RaftStateMachineRef) =
 func heartbeat(sm: var RaftStateMachineRef, follower: var RaftFollowerProgressTrackerRef) =
   sm.info "heartbeat " & $follower.nextIndex
   var previousTerm = 0
+  # If the log of the followeris already in sync then we should use the last intedex
+  let previousLogIndex = min(follower.nextIndex - 1, sm.log.lastIndex)
   if sm.log.lastIndex > 1:
-    previousTerm = sm.log.termForIndex(follower.nextIndex - 1).get()
+    previousTerm = sm.log.termForIndex(previousLogIndex).get()
   let request = RaftRpcAppendRequest(
       previousTerm: previousTerm,
-      previousLogIndex: follower.nextIndex - 1,
+      previousLogIndex: previousLogIndex,
       commitIndex: sm.commitIndex,
       entries: @[])
   sm.sendTo(follower.id, request)
@@ -411,9 +417,9 @@ func tick*(sm: var RaftStateMachineRef, now: times.DateTime) =
     sm.timeNow = now
     if sm.state.isLeader:
       sm.tickLeader(now);
-    elif sm.timeNow - sm.lastElectionTime > sm.randomizedElectionTime:
-      sm.debug "Become candidate"
+    elif sm.timeNow - sm.lastElectionTime > sm.randomizedElectionTime:     
       sm.becomeCandidate()
+      sm.debug "Become candidate"
 
 func commit(sm: var RaftStateMachineRef) =
   if not sm.state.isLeader:
@@ -541,6 +547,8 @@ func requestVote*(sm: var RaftStateMachineRef, fromId: RaftNodeId, request: Raft
   # the process will repeat, resulting in poor availability.
   let canVote = sm.votedFor == fromId or (sm.votedFor == RaftNodeId() and sm.currentLeader == RaftNodeId())
   if canVote and sm.log.isUpToDate(request.lastLogIndex, request.lastLogTerm):
+    sm.votedFor = fromId
+    sm.lastElectionTime = sm.timeNow
     let responce = RaftRpcVoteReply(currentTerm: sm.term, voteGranted: true)
     sm.sendTo(fromId, responce)
   else:
@@ -574,13 +582,13 @@ func installSnapshotReplay(sm: var RaftStateMachineRef, fromId: RaftnodeId, repl
 
 func advance*(sm: var RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime) =
   
+  sm.debug "Advance with" & $msg
   if msg.currentTerm > sm.term:
     sm.debug "Current node is behind"
     var leaderId = RaftnodeId()
     if msg.kind == RaftRpcMessageType.AppendRequest:
       leaderId = msg.sender
     sm.becomeFollower(leaderId)
-    # TODO: implement pre vote
     sm.term = msg.currentTerm
     sm.votedFor = RaftnodeId()
   elif msg.currentTerm < sm.term:
@@ -589,14 +597,18 @@ func advance*(sm: var RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateT
       let rejected = RaftRpcAppendReplyRejected(nonMatchingIndex: 0, lastIdx: sm.log.lastIndex)
       let responce = RaftRpcAppendReply(term: sm.term, commitIndex: sm.commitIndex, result: RaftRpcCode.Rejected, rejected: rejected)
       sm.sendTo(msg.sender, responce)
+    elif msg.kind == RaftRpcMessageType.InstallSnapshot:
+      sm.sendTo(msg.sender, RaftSnapshotReply(term: sm.term, success: false))
+    elif msg.kind == RaftRpcMessageType.VoteRequest:
+      discard
 
-    sm.warning "Ignore message with lower term"
+    sm.warning "Ignore message with lower term" & $sm.term & " " & $msg
   else:
     if msg.kind == RaftRpcMessageType.AppendRequest or msg.kind == RaftRpcMessageType.InstallSnapshot:
       if sm.state.isCandidate:
           sm.becomeFollower(msg.sender)
-      elif sm.state.isFollower:
-          sm.follower.leader = msg.sender
+      elif sm.state.isFollower and sm.currentLeader == RaftNodeId():
+          sm.state.follower.leader = msg.sender
       sm.lastElectionTime = now
       if msg.sender != sm.currentLeader:
         sm.error "Got snapshot from unexpected leader" & $msg
