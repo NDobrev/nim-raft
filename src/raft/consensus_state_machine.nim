@@ -150,6 +150,15 @@ func follower*(sm: var RaftStateMachineRef): var FollowerState =
 func candidate*(sm: var RaftStateMachineRef): var CandidateState =
   return sm.state.candidate
 
+func isLeader*(sm: var RaftStateMachineRef): bool =
+  return sm.state.isLeader
+
+func isFollower*(sm: var RaftStateMachineRef): bool =
+  return sm.state.isFollower
+
+func isCandidate*(sm: var RaftStateMachineRef): bool =
+  return sm.state.isCandidate
+
 const loglevel{.intdefine.}:int = int(DebugLogLevel.None)
 
 template addDebugLogEntry(sm: RaftStateMachineRef, levelArg: DebugLogLevel, message: string) =
@@ -287,7 +296,7 @@ func replicate*(sm: var RaftStateMachineRef) =
 func configuration*(sm: var RaftStateMachineRef): RaftConfig = 
   return sm.log.configuration
 
-func addEntry(sm: var RaftStateMachineRef, entry: LogEntry) = {.cast(noSideEffect).}:
+func addEntry(sm: var RaftStateMachineRef, entry: LogEntry): LogEntry = {.cast(noSideEffect).}:
   var tmpEntry = entry
   if not sm.state.isLeader:
     sm.error "Only the leader can handle new entries"
@@ -312,16 +321,16 @@ func addEntry(sm: var RaftStateMachineRef, entry: LogEntry) = {.cast(noSideEffec
     # The new configuration takes effect on each server as
     # soon as it is added to that server’s log
     sm.leader.tracker.setConfig(sm.log.configuration, sm.log.lastIndex, sm.timeNow)
+  return entry
     
-
-func addEntry*(sm: var RaftStateMachineRef, command: Command) =
+func addEntry*(sm: var RaftStateMachineRef, command: Command): LogEntry =
   sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletCommand, command: command))
 
-func addEntry*(sm: var RaftStateMachineRef, config: RaftConfig) = {.cast(noSideEffect).}:
+func addEntry*(sm: var RaftStateMachineRef, config: RaftConfig): LogEntry = {.cast(noSideEffect).}:
   sm.debug "new config entry" & $config.currentSet
   sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletConfig, config: config))
 
-func addEntry*(sm: var RaftStateMachineRef, dummy: Empty) =
+func addEntry*(sm: var RaftStateMachineRef, dummy: Empty): LogEntry =
   sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletEmpty, empty: true))
 
 func becomeFollower*(sm: var RaftStateMachineRef, leaderId: RaftNodeId) =
@@ -343,7 +352,7 @@ func becomeLeader*(sm: var RaftStateMachineRef) =
   
   # Because we will add new entry on the next line
   sm.state = initLeader(sm.log.configuration, sm.log.lastIndex + 1, sm.timeNow)
-  sm.addEntry(Empty())
+  discard sm.addEntry(Empty())
   sm.pingLeader = false
   sm.lastElectionTime = sm.timeNow  
   return
@@ -381,9 +390,9 @@ func becomeCandidate*(sm: var RaftStateMachineRef) =
 
 func heartbeat(sm: var RaftStateMachineRef, follower: var RaftFollowerProgressTrackerRef) =
   sm.info "heartbeat " & $follower.nextIndex
-  var previousTerm = 0
+  var previousTerm = RaftNodeTerm(0)
   # If the log of the followeris already in sync then we should use the last intedex
-  let previousLogIndex = min(follower.nextIndex - 1, sm.log.lastIndex)
+  let previousLogIndex = RaftLogIndex(min(follower.nextIndex - 1, sm.log.lastIndex))
   if sm.log.lastIndex > 1:
     previousTerm = sm.log.termForIndex(previousLogIndex).get()
   let request = RaftRpcAppendRequest(

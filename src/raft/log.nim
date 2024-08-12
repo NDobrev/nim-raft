@@ -1,8 +1,10 @@
 import types
 import std/sequtils
 import std/strformat
+import stew/byteutils
 import strutils
 import tracker
+
 type
   RaftLogEntryType* = enum
     rletCommand = 0,
@@ -34,6 +36,8 @@ type
     config*: RaftConfig
     snapshotId*: RaftSnapshotId
 
+
+
 func init*(T: type RaftLog, snapshot: RaftSnapshot, entires: seq[LogEntry] = @[]): T =
   var log = T()
   if entires.len == 0:
@@ -57,6 +61,23 @@ func init*(T: type RaftLog, snapshot: RaftSnapshot, entires: seq[LogEntry] = @[]
   assert log.firstIndex > 0
   return log
 
+
+func toBytes*(entry: LogEntry): seq[byte] =
+  var bytes = newSeq[byte]()
+  bytes.add(cast[array[4, byte]](entry.term))
+  bytes.add(cast[array[4, byte]](entry.index))
+  case entry.kind
+  of rletCommand:
+    bytes.add(entry.command.data)
+  of rletConfig: 
+    for node in entry.config.currentSet:
+      bytes.add(node.id.toBytes)
+    for node in entry.config.previousSet:
+      bytes.add(node.id.toBytes)
+  of rletEmpty: 
+    bytes.add(0)
+  return bytes
+
 func lastTerm*(rf: RaftLog): RaftNodeTerm =
   # Not sure if it's ok, maybe we should return optional value
   let size = rf.logEntries.len
@@ -67,17 +88,17 @@ func lastTerm*(rf: RaftLog): RaftNodeTerm =
 func entriesCount*(rf: RaftLog): int =
   return rf.logEntries.len
 
-func lastIndex*(rf: RaftLog): RaftNodeTerm =
-  return rf.logEntries.len + rf.firstIndex - 1
+func lastIndex*(rf: RaftLog): RaftLogIndex =
+  return RaftLogIndex(rf.logEntries.len) + rf.firstIndex - RaftLogIndex(1)
 
-func nextIndex*(rf: RaftLog): int =
-  return rf.lastIndex + 1
+func nextIndex*(rf: RaftLog): RaftLogIndex =
+  return rf.lastIndex + RaftLogIndex(1)
 
 func truncateUncomitted*(rf: var RaftLog, index: RaftLogIndex) = {.cast(noSideEffect).}: 
   assert index >= rf.firstIndex
   if rf.logEntries.len == 0:
     return
-  rf.logEntries.delete((index - rf.firstIndex)..<rf.logEntries.len)
+  rf.logEntries.delete(int(index - rf.firstIndex)..<rf.logEntries.len)
   if rf.lastConfigIndex > rf.lastIndex:
     assert rf.prevConfigIndex < rf.lastConfigIndex
     rf.lastConfigIndex = rf.prevConfigIndex
@@ -168,7 +189,7 @@ func applySnapshot*(rf: var RaftLog, snapshot: RaftSnapshot) =
   else:
     let entriesToRemove = rf.logEntries.len - rf.lastIndex - snapshot.index
     rf.logEntries = rf.logEntries[entriesToRemove..<rf.logEntries.len]
-    rf.firstIndex = rf.firstIndex + entriesToRemove
+    rf.firstIndex = rf.firstIndex + RaftLogIndex(entriesToRemove)
 
   if snapshot.index >= rf.prevConfigIndex:
     rf.prevConfigIndex = 0

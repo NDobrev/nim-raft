@@ -169,7 +169,7 @@ func init*(T: type RaftTracker, config: RaftConfig, nextIndex: RaftLogIndex, now
   tracker.setConfig(config, nextIndex, now)
   return tracker
 
-func committed*(tracker: RaftTracker, previousCommitIndex: int): RaftLogIndex =
+func committed*(tracker: RaftTracker, previousCommitIndex: RaftLogIndex): RaftLogIndex =
   var current = MatchSeqRef.new(previousCommitIndex)
   if tracker.previous.len != 0:
     var previous = MatchSeqRef.new(previousCommitIndex)
