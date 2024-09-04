@@ -358,7 +358,6 @@ func becomeLeader*(sm: var RaftStateMachineRef) =
   return
 
 func becomeCandidate*(sm: var RaftStateMachineRef) =
-  #TODO: implement
   if not sm.state.isCandidate:
     sm.output.stateChange = true
 
@@ -646,7 +645,6 @@ func advance*(sm: var RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateT
       sm.sendTo(msg.sender, RaftSnapshotReply(term: sm.term, success: success))
     else:
       sm.warning "Follower ignore message" & $msg
-    # TODO: imelement the rest of the state transitions
   elif sm.state.isLeader:
     if msg.kind == RaftRpcMessageType.AppendRequest:
       sm.warning "Ignore message leader append his entries directly"

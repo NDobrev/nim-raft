@@ -17,7 +17,6 @@ type
   LogEntry* = object         # Abstarct Raft Node Log entry containing opaque binary data (Blob etc.)
     term*: RaftNodeTerm
     index*: RaftLogIndex
-    # TODO: Add configuration too
     case kind*: RaftLogEntryType:
     of rletCommand: command*: Command
     of rletConfig: config*: RaftConfig
@@ -35,8 +34,6 @@ type
     term*: RaftNodeTerm
     config*: RaftConfig
     snapshotId*: RaftSnapshotId
-
-
 
 func init*(T: type RaftLog, snapshot: RaftSnapshot, entires: seq[LogEntry] = @[]): T =
   var log = T()
