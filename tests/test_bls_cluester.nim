@@ -310,7 +310,7 @@ proc submitMessage(tc: var BLSTestCluster, msg: Message): bool =
     if not leader.get.messageSignatures.hasKey(msg.fieldInt):
       leader.get.messageSignatures[msg.fieldInt] = @[]
     leader.get.messageSignatures[msg.fieldInt].add(share)
-    leader.get().stm.addEntry(msg.toCommand())
+    discard leader.get().stm.addEntry(msg.toCommand())
     return true
   return false
 

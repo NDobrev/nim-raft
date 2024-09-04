@@ -207,7 +207,7 @@ proc configuration(tc: var TestCluster): Option[RaftConfig] =
 proc submitCommand(tc: var TestCluster, cmd: Command): bool = 
   var leader = tc.getLeader()
   if leader.isSome():
-    leader.get().addEntry(cmd)
+    discard leader.get().addEntry(cmd)
     return true
   return false
 
@@ -441,7 +441,7 @@ proc consensusstatemachineMain*() =
       check output.messages.len == 0
       check sm.state.isLeader
       
-      sm.addEntry(Empty())
+      discard sm.addEntry(Empty())
       check sm.poll().messages.len == 0
       timeNow +=  250.milliseconds
       sm.tick(timeNow)
