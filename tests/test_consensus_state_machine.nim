@@ -6,7 +6,6 @@
 # at your option.
 # This file may not be copied, modified, or distributed except according to
 # those terms.
-
 import unittest2
 import ../src/raft/types
 import ../src/raft/consensus_state_machine
@@ -159,7 +158,7 @@ proc advance(tc: var TestCluster, now: times.DateTime, logLevel: DebugLogLevel =
     if tc.blockedTickSet.contains(id):
       continue
     tc.nodes[id].tick(now)
-    var output = tc.nodes[id].poll()
+    let output = tc.nodes[id].poll()
     debugLogs.add(output.debugLogs)
     for msg in output.messages:
       tc.handleMessage(now, msg, logLevel)       
@@ -257,6 +256,21 @@ proc submitNewConfig(tc: var TestCluster, cfg: RaftConfig) =
 proc toCommand(data: string): Command =
   return Command(data: data.toBytes)
 
+
+type
+  ProcType = proc()
+
+# Function to measure execution time of a given procedure
+proc measureExecutionTime(procToMeasure: ProcType) =
+  let startTime = cpuTime()  # or use highResolutionTime()
+  
+  # Execute the procedure
+  procToMeasure()
+  
+  let endTime = cpuTime()  # or use highResolutionTime()
+  let executionTime = endTime - startTime
+
+  echo "Execution Time: ".red, executionTime, " seconds"
 
 proc consensusstatemachineMain*() =
   var config = createConfigFromIds(test_ids_1)
@@ -867,7 +881,6 @@ proc consensusstatemachineMain*() =
       timeNow = cluster.advanceUntil(timeNow, timeNow + 105.milliseconds)      
       timeNow = cluster.establishLeader(timeNow)
       check cluster.getLeader.isSome()
-
 
 if isMainModule:
   consensusstatemachineMain()

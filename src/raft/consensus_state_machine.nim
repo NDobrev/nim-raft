@@ -214,6 +214,7 @@ func new*(T: type RaftStateMachineRef, id: RaftnodeId, currentTerm: RaftNodeTerm
   sm.randomGenerator = randomGenerator
   sm.resetElectionTimeout()
   sm.observedState.observe(sm)
+  sm.output = RaftStateMachineRefOutput()
   return sm
 
 func currentLeader(sm: var RaftStateMachineRef): RaftnodeId =
@@ -433,7 +434,11 @@ func tick*(sm: var RaftStateMachineRef, now: times.DateTime) =
 func commit(sm: var RaftStateMachineRef) =
   if not sm.state.isLeader:
     return
-  
+
+  assert(sm.commitIndex <= sm.log.lastIndex)
+  if sm.commitIndex == sm.log.lastIndex:
+    return
+
   let newCommitIndex = sm.leader.tracker.committed(sm.commitIndex)  
   if newCommitIndex <= sm.commitIndex:
     return
@@ -477,9 +482,8 @@ func poll*(sm: var RaftStateMachineRef):  RaftStateMachineRefOutput =
   if sm.votedFor != RaftnodeId():
     sm.output.votedFor = some(sm.votedFor)
   sm.observedState.observe(sm)
-  let output = sm.output
-  sm.output = RaftStateMachineRefOutput()
-  
+  var output = RaftStateMachineRefOutput()
+  swap(output, sm.output)
   if sm.state.isLeader and output.logEntries.len > 0:
     sm.debug "Leader accept index: " & $output.logEntries[output.logEntries.len - 1].index
     var leaderProgress = sm.findFollowerProggressById(sm.myId)
