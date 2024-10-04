@@ -5,22 +5,33 @@ import stew/byteutils
 import strutils
 import tracker
 
+import posix, os
+
+
 type
   RaftLogEntryType* = enum
     rletCommand = 0,
     rletConfig = 1,
     rletEmpty = 2
+
   Command* = object
     data*: seq[byte]
+
   Empty* = object
 
-  LogEntry* = object         # Abstarct Raft Node Log entry containing opaque binary data (Blob etc.)
+  LogEntry* = object
     term*: RaftNodeTerm
     index*: RaftLogIndex
     case kind*: RaftLogEntryType:
-    of rletCommand: command*: Command
-    of rletConfig: config*: RaftConfig
-    of rletEmpty: empty*: bool
+      of rletCommand: command*: Command
+      of rletConfig: config*: RaftConfig
+      of rletEmpty: empty*: bool
+
+  RaftSnapshot* = object
+    index*: RaftLogIndex
+    term*: RaftNodeTerm
+    config*: RaftConfig
+    snapshotId*: RaftSnapshotId
 
   RaftLog* = object
     logEntries: seq[LogEntry]
@@ -29,36 +40,37 @@ type
     prevConfigIndex*: RaftLogIndex
     snapshot*: RaftSnapshot
 
-  RaftSnapshot* = object
-    index*: RaftLogIndex
-    term*: RaftNodeTerm
-    config*: RaftConfig
-    snapshotId*: RaftSnapshotId
-
-func init*(T: type RaftLog, snapshot: RaftSnapshot, entires: seq[LogEntry] = @[]): T =
-  var log = T()
-  if entires.len == 0:
-    log.firstIndex = snapshot.index + 1
-  else:
-    log.firstIndex = entires[0].index
-    assert log.firstIndex <= snapshot.index + 1
-  log.snapshot = snapshot
-  log.logEntries = entires
-  log.lastConfigIndex = RaftLogIndex(0)
-  log.prevConfigIndex = RaftLogIndex(0)
-  for i in countdown(log.logEntries.len-1, 0):
-    if log.logEntries[i].index == snapshot.index:
-      break
-    if log.logEntries[i].kind == RaftLogEntryType.rletConfig:
-      if log.lastConfigIndex == RaftLogIndex(0):
-        log.lastConfigIndex = log.logEntries[i].index
+# Helper procedure to update configuration indices
+proc updateConfigIndices(rf: var RaftLog) =
+  rf.lastConfigIndex = 0
+  rf.prevConfigIndex = 0
+  for i in countdown(rf.logEntries.high, 0):
+    if rf.logEntries[i].kind == RaftLogEntryType.rletConfig:
+      if rf.lastConfigIndex == 0:
+        rf.lastConfigIndex = rf.logEntries[i].index
       else:
-        log.prevConfigIndex = log.logEntries[i].index
-    
-  assert log.firstIndex > 0
+        rf.prevConfigIndex = rf.logEntries[i].index
+
+func debugPause() =
+  {.cast(noSideEffect).}:
+    echo  "Process is about to raise SIGSTOP and pause." & $getCurrentProcessId()
+    discard `raise`(SIGSTOP)
+    echo "Process has resumed after SIGSTOP."
+
+# Initialize the RaftLog with the snapshot and optional entries
+func init*(T: type RaftLog, snapshot: RaftSnapshot, entries: seq[LogEntry] = @[]): T =
+  var log = T()
+  log.snapshot = snapshot
+  log.firstIndex = snapshot.index + 1
+  log.logEntries = @[]
+  for entry in entries:
+    if entry.index >= log.firstIndex:
+      log.logEntries.add(entry)
+  log.updateConfigIndices()
   return log
 
 
+# Convert a LogEntry to bytes (for serialization purposes)
 func toBytes*(entry: LogEntry): seq[byte] =
   var bytes = newSeq[byte]()
   bytes.add(cast[array[4, byte]](entry.term))
@@ -66,159 +78,197 @@ func toBytes*(entry: LogEntry): seq[byte] =
   case entry.kind
   of rletCommand:
     bytes.add(entry.command.data)
-  of rletConfig: 
+  of rletConfig:
     for node in entry.config.currentSet:
       bytes.add(node.id.toBytes)
     for node in entry.config.previousSet:
       bytes.add(node.id.toBytes)
-  of rletEmpty: 
+  of rletEmpty:
     bytes.add(0)
   return bytes
 
+# Get the last term in the log
 func lastTerm*(rf: RaftLog): RaftNodeTerm =
-  # Not sure if it's ok, maybe we should return optional value
-  let size = rf.logEntries.len
-  if size == 0:
-    return 0
-  return rf.logEntries[size - 1].term
+  if rf.logEntries.len == 0:
+    return rf.snapshot.term
+  else:
+    return rf.logEntries[^1].term
 
+# Get the number of entries in the log
 func entriesCount*(rf: RaftLog): int =
   return rf.logEntries.len
 
+# Get the last index in the log
 func lastIndex*(rf: RaftLog): RaftLogIndex =
-  return RaftLogIndex(rf.logEntries.len) + rf.firstIndex - RaftLogIndex(1)
-
-func nextIndex*(rf: RaftLog): RaftLogIndex =
-  return rf.lastIndex + RaftLogIndex(1)
-
-func truncateUncomitted*(rf: var RaftLog, index: RaftLogIndex) = {.cast(noSideEffect).}: 
-  assert index >= rf.firstIndex
   if rf.logEntries.len == 0:
+    return rf.snapshot.index
+  else:
+    return rf.logEntries[^1].index
+
+# Get the next index for appending entries
+func nextIndex*(rf: RaftLog): RaftLogIndex =
+  return rf.lastIndex + 1
+
+# Get the relative index within logEntries for a given log index
+func getRelativeIndex*(rf: RaftLog, index: RaftLogIndex): Option[int] =
+  if index < rf.firstIndex or index > rf.lastIndex:
+    return none(int)
+  return some(int(index - rf.firstIndex))
+
+# Check if the log contains the given index
+func hasIndex*(rf: RaftLog, index: RaftLogIndex): bool =
+  return rf.getRelativeIndex(index).isSome
+
+# Truncate uncommitted entries starting from the given index
+func truncateUncommitted*(rf: var RaftLog, index: RaftLogIndex) =
+  let relIndexOpt = rf.getRelativeIndex(index)
+  if relIndexOpt.isNone or rf.logEntries.len == 0:
     return
-  rf.logEntries.delete(int(index - rf.firstIndex)..<rf.logEntries.len)
-  if rf.lastConfigIndex > rf.lastIndex:
-    assert rf.prevConfigIndex < rf.lastConfigIndex
-    rf.lastConfigIndex = rf.prevConfigIndex
-    rf.prevConfigIndex = 0
+  let relIndex = relIndexOpt.get()
+  if relIndex < rf.logEntries.len:
+    rf.logEntries.setLen(relIndex)
+    rf.updateConfigIndices()
 
-func isUpToDate*(rf: RaftLog, index: RaftLogIndex, term: RaftNodeTerm): bool = 
-  return term > rf.lastTerm or (term == rf.lastTerm and index >= rf.lastIndex)
+# Check if a log is up-to-date compared to a given index and term
+func isUpToDate*(rf: RaftLog, index: RaftLogIndex, term: RaftNodeTerm): bool =
+  let lastTerm = rf.lastTerm
+  let lastIndex = rf.lastIndex
+  return term > lastTerm or (term == lastTerm and index >= lastIndex)
 
-func getEntryByIndex*(rf: RaftLog, index: RaftLogIndex): LogEntry = 
+func getEntryByIndex*(rf: RaftLog, index: RaftLogIndex): LogEntry =
+  if index - rf.firstIndex > rf.logEntries.len - 1:
+    
+      debugPause()
   return rf.logEntries[index - rf.firstIndex]
 
 func append(rf: var RaftLog, entry: LogEntry) =
   rf.logEntries.add(entry)
   if entry.kind == rletConfig:
     rf.prevConfigIndex = rf.lastConfigIndex
-    rf.lastConfigIndex = rf.lastIndex
+    rf.lastConfigIndex = entry.index
 
-func appendAsLeader*(rf: var RaftLog, entry: LogEntry) = 
+# Append an entry as a leader
+func appendAsLeader*(rf: var RaftLog, entry: LogEntry) =
   rf.append(entry)
 
+# Append an entry as a follower, handling potential conflicts
 func appendAsFollower*(rf: var RaftLog, entry: LogEntry) =
-  assert entry.index > 0
-  let currentIdx = rf.lastIndex
-  if entry.index <= currentIdx:
-    if entry.index < rf.firstIndex:
-      # SKip 
-      return 
-    if entry.term == rf.getEntryByIndex(entry.index).term:
-      # Skip
+  if entry.index < rf.firstIndex:
+    # Entry is before our log; cannot append
+    return
+  if entry.index <= rf.lastIndex:
+    let existingEntryOpt = rf.getEntryByIndex(entry.index)
+    if existingEntryOpt.term == entry.term:
+      # Entry already exists with the same term; skip
       return
-
-    assert entry.index > rf.snapshot.index
-    rf.truncateUncomitted(entry.index)
-  
-  assert entry.index == rf.nextIndex, fmt"entry.index: {entry.index} not eq to rf.nextIndex: {rf.nextIndex}"
+    # Conflict; truncate log and append new entry
+    rf.truncateUncommitted(entry.index)
+  elif entry.index > rf.nextIndex:
+    # Gap in log; cannot append
+    # In a real implementation, you might need to handle this case
+    return
   rf.append(entry)
 
-func appendAsLeader*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, data: Command) = 
-  rf.appendAsLeader(LogEntry(term: term, index: index, kind: rletCommand,  command: data))
+# Append a command as a leader
+func appendAsLeader*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, data: Command) =
+  rf.appendAsLeader(LogEntry(term: term, index: index, kind: rletCommand, command: data))
 
-func appendAsLeader*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, empty: bool) = 
+# Append an empty entry as a leader
+func appendAsLeader*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, empty: bool) =
   rf.appendAsLeader(LogEntry(term: term, index: index, kind: rletEmpty, empty: true))
 
-func appendAsFollower*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, data: Command) = 
-  rf.appendAsFollower(LogEntry(term: term, index: index, kind: rletCommand,  command: data))
+# Append a command as a follower
+func appendAsFollower*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, data: Command) =
+  rf.appendAsFollower(LogEntry(term: term, index: index, kind: rletCommand, command: data))
 
-func matchTerm*(rf: RaftLog, index: RaftLogIndex, term: RaftNodeTerm): (bool, RaftNodeTerm) = 
+# Check if the term at a given index matches the provided term
+func matchTerm*(rf: RaftLog, index: RaftLogIndex, term: RaftNodeTerm): (bool, RaftNodeTerm) =
   if index == 0:
     return (true, 0)
-  
-  if index < rf.snapshot.index:
-    return (true, rf.lastTerm)
-
-  var myTerm = RaftNodeTerm(0)
   if index == rf.snapshot.index:
-    myTerm = rf.snapshot.term
+    let myTerm = rf.snapshot.term
+    return (myTerm == term, myTerm)
+  let relIndexOpt = rf.getRelativeIndex(index)
+  if relIndexOpt.isSome:
+    let relIndex = relIndexOpt.get()
+    let myTerm = rf.logEntries[relIndex].term
+    return (myTerm == term, myTerm)
   else:
-    let i = index - rf.firstIndex
-    if i >= len(rf.logEntries):
-      # The follower doesn't have all etries
-      return (false, 0)
-    myTerm = rf.logEntries[i].term
-  
-  if myTerm == term:
-    return (true, 0)
-  else:
-    return (false, myTerm)
+    # Index not in log
+    return (false, 0)
 
+# Get the term for a specific index
 func termForIndex*(rf: RaftLog, index: RaftLogIndex): Option[RaftNodeTerm] =
-  assert rf.logEntries.len > index - rf.firstIndex, $rf.logEntries.len  & " " & $index & "" & $rf
-  if rf.logEntries.len > 0 and index >= rf.firstIndex:
-    return some(rf.logEntries[index - rf.firstIndex].term)
   if index == rf.snapshot.index:
     return some(rf.snapshot.term)
-  return none(RaftNodeTerm)
-
-func configuration*(rf: RaftLog): RaftConfig = 
-  if rf.lastConfigIndex > 0:
-    return rf.logEntries[rf.lastConfigIndex - rf.firstIndex].config
+  let relIndexOpt = rf.getRelativeIndex(index)
+  if relIndexOpt.isSome:
+    return some(rf.logEntries[relIndexOpt.get()].term)
   else:
-    return rf.snapshot.config
+    return none(RaftNodeTerm)
 
+# Get the current configuration
+func configuration*(rf: RaftLog): RaftConfig =
+  if rf.lastConfigIndex > 0:
+    let relIndexOpt = rf.getRelativeIndex(rf.lastConfigIndex)
+    if relIndexOpt.isSome:
+      return rf.logEntries[relIndexOpt.get()].config
+  return rf.snapshot.config
+
+# Update configuration indices after applying a snapshot
+func updateConfigIndicesAfterSnapshot(rf: var RaftLog, snapshotIndex: RaftLogIndex) =
+  if snapshotIndex >= rf.lastConfigIndex:
+    rf.lastConfigIndex = 0
+    rf.prevConfigIndex = 0
+  elif snapshotIndex >= rf.prevConfigIndex:
+    rf.prevConfigIndex = 0
+
+# Apply a snapshot to the log
 func applySnapshot*(rf: var RaftLog, snapshot: RaftSnapshot) =
   assert snapshot.index > rf.snapshot.index
-  if snapshot.index > rf.lastIndex:
+  if snapshot.index >= rf.lastIndex:
     rf.logEntries = @[]
     rf.firstIndex = snapshot.index + 1
   else:
-    let entriesToRemove = rf.logEntries.len - rf.lastIndex - snapshot.index
-    rf.logEntries = rf.logEntries[entriesToRemove..<rf.logEntries.len]
-    rf.firstIndex = rf.firstIndex + RaftLogIndex(entriesToRemove)
-
-  if snapshot.index >= rf.prevConfigIndex:
-    rf.prevConfigIndex = 0
-    if snapshot.index >= rf.lastConfigIndex:
-      rf.lastConfigIndex = 0
+    let newFirstIndex = snapshot.index + 1
+    let entriesToRemove = int(newFirstIndex - rf.firstIndex)
+    rf.logEntries = rf.logEntries[entriesToRemove..^1]
+    rf.firstIndex = newFirstIndex
+  rf.updateConfigIndicesAfterSnapshot(snapshot.index)
   rf.snapshot = snapshot
 
-func toString*(entry: LogEntry, commandToString: proc(c: Command):string {.noSideEffect.}): string =
+
+
+# Convert a LogEntry to a string using a custom commandToString function
+func toString*(entry: LogEntry, commandToString: proc(c: Command): string {.noSideEffect.}): string =
   case entry.kind:
     of RaftLogEntryType.rletCommand:
-      return fmt"term:{entry.term}, index:{entry.index}, type:{$entry.kind}, command: {commandToString(entry.command)}"
+      return fmt"term: {entry.term}, index: {entry.index}, type: {entry.kind}, command: {commandToString(entry.command)}"
     of RaftLogEntryType.rletEmpty:
-      return fmt"term:{entry.term}, index:{entry.index}, type:{$entry.kind}, empty: null"
+      return fmt"term: {entry.term}, index: {entry.index}, type: {entry.kind}, empty: true"
     of RaftLogEntryType.rletConfig:
-      return fmt"term:{entry.term}, index:{entry.index}, type:{$entry.kind}, config: {$entry.config}"
+      return fmt"term: {entry.term}, index: {entry.index}, type: {entry.kind}, config: {entry.config}"
 
+# Convert the entire RaftLog to a string
 func toString*(rf: RaftLog, commandToString: proc(c: Command): string {.noSideEffect.}): string =
   for e in rf.logEntries:
-    result = result & e.toString(commandToString) & "\n"
+    result.add(e.toString(commandToString) & "\n")
   return result
 
+# Helper function to convert bytes to a string (for commands)
 func toString(bytes: openarray[byte]): string =
   result = newString(bytes.len)
   copyMem(result[0].addr, bytes[0].unsafeAddr, bytes.len)
 
+# Default command to string conversion (hex representation)
 func commandToHex(c: Command): string =
   for b in c.data:
-    result = result & b.toHex()
-  return result
+    result.add(b.toHex() & " ")
+  return result.strip()
 
+# String representation of RaftLog
 func `$`*(rf: RaftLog): string =
-  result = "\n Log state:\n"
+  result = "\nLog state:\n"
   for e in rf.logEntries:
-    result = result & e.toString(commandToHex) & "\n"
+    result.add(e.toString(commandToHex) & "\n")
   return result

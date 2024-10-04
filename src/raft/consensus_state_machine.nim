@@ -159,10 +159,10 @@ func isFollower*(sm: var RaftStateMachineRef): bool =
 func isCandidate*(sm: var RaftStateMachineRef): bool =
   return sm.state.isCandidate
 
-const loglevel{.intdefine.}:int = int(DebugLogLevel.None)
+const loglevel{.intdefine.}:int = int(DebugLogLevel.Debug)
 
 template addDebugLogEntry(sm: RaftStateMachineRef, levelArg: DebugLogLevel, message: string) =
-  if loglevel > int(levelArg):
+  if loglevel >= int(levelArg):
     sm.output.debugLogs.add(DebugLogEntry(time: sm.timeNow, state: sm.state.state, term: sm.term,level: levelArg, msg: message, nodeId: sm.myId))
 
 template debug*(sm: RaftStateMachineRef, log: string) = 
@@ -375,7 +375,7 @@ func becomeCandidate*(sm: var RaftStateMachineRef) =
   sm.term = sm.term + 1
   for nodeId in sm.candidate.votes.voters:
     if nodeId == sm.myId:
-      sm.debug "register vote for it self "
+      sm.debug "register vote for it self in term" & $sm.term
       discard sm.candidate.votes.registerVote(nodeId, true)
       sm.votedFor = nodeId
       continue
@@ -471,12 +471,19 @@ func poll*(sm: var RaftStateMachineRef):  RaftStateMachineRefOutput =
   
   if diff > 0:
     for i in (sm.observedState.persistedIndex + 1)..sm.log.lastIndex:
+      if not sm.log.hasIndex(i):
+        sm.error "Entry not found in log"
+        sm.error "Log: " & $sm.log
+        sm.error "Observed: " & $sm.observedState
+        sm.error "Index: " & $i
+        sm.error "Last index: " & $sm.log.lastIndex
+        break;
       sm.output.logEntries.add(sm.log.getEntryByIndex(i))
 
   let observedCommitIndex = max(sm.observedState.commitIndex, sm.log.snapshot.index)
   if observedCommitIndex < sm.commitIndex:
     assert(sm.output.committed.len == 0)
-    for i in (observedCommitIndex + 1)..<(sm.commitIndex + 1):
+    for i in (observedCommitIndex + 1)..sm.commitIndex:
       sm.output.committed.add(sm.log.getEntryByIndex(i))
 
   if sm.votedFor != RaftnodeId():
@@ -563,6 +570,7 @@ func requestVote*(sm: var RaftStateMachineRef, fromId: RaftNodeId, request: Raft
   if canVote and sm.log.isUpToDate(request.lastLogIndex, request.lastLogTerm):
     sm.votedFor = fromId
     sm.lastElectionTime = sm.timeNow
+    sm.debug "Voted for " & $fromId & " term" & $sm.term
     let responce = RaftRpcVoteReply(currentTerm: sm.term, voteGranted: true)
     sm.sendTo(fromId, responce)
   else:
@@ -595,12 +603,14 @@ func installSnapshotReplay(sm: var RaftStateMachineRef, fromId: RaftnodeId, repl
     sm.replicateTo(follower.get())
 
 func advance*(sm: var RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime) =
-  
   sm.debug "Advance with" & $msg
+  if msg.receiver != sm.myId:
+    sm.debug "Invalid receiver:" & $msg.receiver & $msg
+    return
   if msg.currentTerm > sm.term:
-    sm.debug "Current node is behind"
+    sm.debug "Current node is behind my term:" & $sm.term & " message term:" & $msg.currentTerm
     var leaderId = RaftnodeId()
-    if msg.kind == RaftRpcMessageType.AppendRequest:
+    if msg.kind == RaftRpcMessageType.AppendRequest or msg.kind == RaftRpcMessageType.InstallSnapshot:
       leaderId = msg.sender
     sm.becomeFollower(leaderId)
     sm.term = msg.currentTerm
@@ -614,18 +624,21 @@ func advance*(sm: var RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateT
     elif msg.kind == RaftRpcMessageType.InstallSnapshot:
       sm.sendTo(msg.sender, RaftSnapshotReply(term: sm.term, success: false))
     elif msg.kind == RaftRpcMessageType.VoteRequest:
-      discard
-
-    sm.warning "Ignore message with lower term" & $sm.term & " " & $msg
+      sm.sendTo(msg.sender, RaftRpcVoteReply(currentTerm: sm.term, voteGranted: false))
+    else:
+      sm.warning "Ignore message with lower term" & $sm.term & " " & $msg
+    return
   else:
     if msg.kind == RaftRpcMessageType.AppendRequest or msg.kind == RaftRpcMessageType.InstallSnapshot:
-      if sm.state.isCandidate:
+      if sm.state.isLeader:
+        sm.error "Got message different leader with same term" & $msg
+      elif sm.state.isCandidate:
           sm.becomeFollower(msg.sender)
-      elif sm.state.isFollower and sm.currentLeader == RaftNodeId():
+      elif sm.currentLeader == RaftNodeId():
           sm.state.follower.leader = msg.sender
       sm.lastElectionTime = now
       if msg.sender != sm.currentLeader:
-        sm.error "Got snapshot from unexpected leader" & $msg
+        sm.error "Got message from unexpected leader" & $msg
 
   if sm.state.isCandidate:
     if msg.kind == RaftRpcMessageType.VoteRequest:

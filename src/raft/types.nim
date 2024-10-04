@@ -43,4 +43,7 @@ type
   ReftConfigRef* = ref RaftConfig
 
 func `$`*(r: RaftNodeId): string =
-  return $r.id
+  if r.id.len > 8:
+    return $r.id[0..8] & ".."
+  else:
+    return $r.id
