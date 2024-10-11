@@ -49,7 +49,6 @@ type
     state*: RaftNodeState
     msg*: string
 
-
   RaftRpcAppendRequest* = object
     previousTerm*: RaftNodeTerm
     previousLogIndex*: RaftLogIndex
@@ -159,7 +158,7 @@ func isFollower*(sm: var RaftStateMachineRef): bool =
 func isCandidate*(sm: var RaftStateMachineRef): bool =
   return sm.state.isCandidate
 
-const loglevel{.intdefine.}:int = int(DebugLogLevel.Debug)
+const loglevel{.intdefine.}:int = int(DebugLogLevel.Error)
 
 template addDebugLogEntry(sm: RaftStateMachineRef, levelArg: DebugLogLevel, message: string) =
   if loglevel >= int(levelArg):
@@ -185,7 +184,6 @@ func observe*(ps: var RaftLastPollState, sm: RaftStateMachineRef) =
   ps.setVotedFor sm.votedFor
   ps.setCommitIndex sm.commitIndex
   ps.setPersistedIndex sm.log.lastIndex
-
 
 func replicationStatus*(sm: var RaftStateMachineRef): string =
   var report = "\nReplication report\n"
@@ -556,7 +554,6 @@ func appendEntry*(sm: var RaftStateMachineRef, fromId: RaftNodeId, request: Raft
   sm.sendTo(fromId, responce)  
 
 func requestVote*(sm: var RaftStateMachineRef, fromId: RaftNodeId, request: RaftRpcVoteRequest) =
-  # TODO: 
   # D-Raft-Extended 
   # 6. The third issue is that removed servers (those not in
   # Cnew) can disrupt the cluster. These servers will not re-
