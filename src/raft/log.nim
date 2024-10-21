@@ -31,7 +31,6 @@ type
     index*: RaftLogIndex
     term*: RaftNodeTerm
     config*: RaftConfig
-    snapshotId*: RaftSnapshotId
 
   RaftLog* = object
     logEntries: seq[LogEntry]
@@ -236,8 +235,6 @@ func applySnapshot*(rf: var RaftLog, snapshot: RaftSnapshot) =
     rf.firstIndex = newFirstIndex
   rf.updateConfigIndicesAfterSnapshot(snapshot.index)
   rf.snapshot = snapshot
-
-
 
 # Convert a LogEntry to a string using a custom commandToString function
 func toString*(entry: LogEntry, commandToString: proc(c: Command): string {.noSideEffect.}): string =

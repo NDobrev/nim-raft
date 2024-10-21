@@ -6,7 +6,7 @@ import ../src/raft
 suite "RaftLog Tests":
 
   test "RaftLog.init with non-empty entries should initialize RaftLog correctly":
-    var snapshot = RaftSnapshot(index: RaftLogIndex(5), term: RaftNodeTerm(1), config: RaftConfig(), snapshotId: RaftSnapshotId(1))
+    var snapshot = RaftSnapshot(index: RaftLogIndex(5), term: RaftNodeTerm(1), config: RaftConfig())
     
     var entries = @[LogEntry(term: RaftNodeTerm(1), index: RaftLogIndex(6), kind: RaftLogEntryType.rletCommand, command: Command(data: @[])),
                     LogEntry(term: RaftNodeTerm(1), index: RaftLogIndex(7), kind: RaftLogEntryType.rletConfig, config: RaftConfig()),
@@ -20,7 +20,7 @@ suite "RaftLog Tests":
     check log.entriesCount == 3
 
   test "RaftLog.init with non-empty entries and multiple config entries should initialize RaftLog correctly":
-    var snapshot = RaftSnapshot(index: RaftLogIndex(5), term: RaftNodeTerm(1), config: RaftConfig(), snapshotId: RaftSnapshotId(1))
+    var snapshot = RaftSnapshot(index: RaftLogIndex(5), term: RaftNodeTerm(1), config: RaftConfig())
     
     var entries = @[LogEntry(term: RaftNodeTerm(1), index: RaftLogIndex(6), kind: RaftLogEntryType.rletCommand, command: Command(data: @[])),
                     LogEntry(term: RaftNodeTerm(1), index: RaftLogIndex(7), kind: RaftLogEntryType.rletConfig, config: RaftConfig()),

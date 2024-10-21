@@ -241,7 +241,7 @@ func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftSnaps
 func sendToImpl*(sm: var RaftStateMachineRef, id: RaftNodeId, request: RaftInstallSnapshot) =
   sm.output.messages.add(RaftRpcMessage(currentTerm: sm.term, receiver: id, sender: sm.myId, kind: RaftRpcMessageType.InstallSnapshot, installSnapshot: request))
 
-func applySnapshot(sm: var RaftStateMachineRef, snapshot: RaftSnapshot): bool = 
+func applySnapshot*(sm: var RaftStateMachineRef, snapshot: RaftSnapshot): bool = 
   sm.debug "Applay snapshot" & $snapshot
 
   let current = sm.log.snapshot
@@ -252,6 +252,7 @@ func applySnapshot(sm: var RaftStateMachineRef, snapshot: RaftSnapshot): bool =
   sm.commitIndex = max(sm.commitIndex, snapshot.index)
   sm.output.applyedSnapshots = some(snapshot)
   sm.log.applySnapshot(snapshot)
+  return true
 
 func sendTo[MsgType](sm: var RaftStateMachineRef, id: RaftNodeId, request: MsgType) =
   if sm.state.isLeader:
