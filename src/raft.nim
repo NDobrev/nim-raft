@@ -12,8 +12,10 @@ import raft/config
 import raft/types
 import raft/log
 import raft/state
+import raft/serialize
 export consensus_state_machine
 export types
 export config
 export log
 export state
+export serialize
