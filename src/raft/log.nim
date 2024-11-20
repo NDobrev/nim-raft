@@ -50,12 +50,6 @@ proc updateConfigIndices(rf: var RaftLog) =
       else:
         rf.prevConfigIndex = rf.logEntries[i].index
 
-func debugPause() =
-  {.cast(noSideEffect).}:
-    echo  "Process is about to raise SIGSTOP and pause." & $getCurrentProcessId()
-    discard `raise`(SIGSTOP)
-    echo "Process has resumed after SIGSTOP."
-
 # Initialize the RaftLog with the snapshot and optional entries
 func init*(T: type RaftLog, snapshot: RaftSnapshot, entries: seq[LogEntry] = @[]): T =
   var log = T()
@@ -69,24 +63,6 @@ func init*(T: type RaftLog, snapshot: RaftSnapshot, entries: seq[LogEntry] = @[]
   return log
 
 
-# Convert a LogEntry to bytes (for serialization purposes)
-func toBytes*(entry: LogEntry): seq[byte] =
-  var bytes = newSeq[byte]()
-  bytes.add(cast[array[4, byte]](entry.term))
-  bytes.add(cast[array[4, byte]](entry.index))
-  case entry.kind
-  of rletCommand:
-    bytes.add(entry.command.data)
-  of rletConfig:
-    for node in entry.config.currentSet:
-      bytes.add(node.id.toBytes)
-    for node in entry.config.previousSet:
-      bytes.add(node.id.toBytes)
-  of rletEmpty:
-    bytes.add(0)
-  return bytes
-
-# Get the last term in the log
 func lastTerm*(rf: RaftLog): RaftNodeTerm =
   if rf.logEntries.len == 0:
     return rf.snapshot.term
@@ -135,9 +111,6 @@ func isUpToDate*(rf: RaftLog, index: RaftLogIndex, term: RaftNodeTerm): bool =
   return term > lastTerm or (term == lastTerm and index >= lastIndex)
 
 func getEntryByIndex*(rf: RaftLog, index: RaftLogIndex): LogEntry =
-  if index - rf.firstIndex > rf.logEntries.len - 1:
-    
-      debugPause()
   return rf.logEntries[index - rf.firstIndex]
 
 func append(rf: var RaftLog, entry: LogEntry) =

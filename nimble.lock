@@ -183,6 +183,29 @@
       "checksums": {
         "sha1": "bd3af4ebaad53f808a1d7c99085a442177506103"
       }
+    },
+    "binary_serialization": {
+      "version": "0.1.0",
+      "vcsRevision": "38a73a70fd43f3835ca01a877353858b19e39d70",
+      "url": "https://github.com/status-im/nim-binary-serialization",
+      "downloadMethod": "git",
+      "dependencies": [
+        "serialization",
+        "stew"
+      ],
+      "checksums": {
+        "sha1": "43df8153f789bc3f1920e8f56cd5ff81b9137a43"
+      }
+    },
+    "results": {
+      "version": "0.4.0",
+      "vcsRevision": "8a03fb2e00dccbf35807c869e0184933b0cffa37",
+      "url": "https://github.com/arnetheduck/nim-results",
+      "downloadMethod": "git",
+      "dependencies": [],
+      "checksums": {
+        "sha1": "395b12b5e931ce871d1b10adcc7fe687d771abfb"
+      }
     }
   },
   "tasks": {}

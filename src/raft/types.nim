@@ -28,8 +28,9 @@ const
 type
   RaftNodeId* = object
     id*: string                              # uuid4 uniquely identifying every Raft Node
-  RaftNodeTerm* = int64                       # Raft Node Term Type
-  RaftLogIndex* = int64                       # Raft Node Log Index Type
+  RaftNodeTerm* = uint64                       # Raft Node Term Type
+  RaftLogIndex* = uint64                       # Raft Node Log Index Type
+  RaftSnapshotId* = uint32
   ConfigMemberSet* = seq[RaftNodeId]
   ConfigDiff* = object
     joining*: ConfigMemberSet

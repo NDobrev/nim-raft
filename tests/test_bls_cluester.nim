@@ -3,6 +3,7 @@ import ../src/raft/consensus_state_machine
 import ../src/raft/log
 import ../src/raft/tracker
 import ../src/raft/state
+import ../src/raft/serialize
 
 import std/[times, sequtils, random]
 import std/sugar
@@ -355,7 +356,13 @@ proc blsconsensusMain*() =
             commited = true
             #break
       check commited == true
-    
+    test "Raft rpc binary serialization":
+      block:
+        let msg = RaftRpcMessage(currentTerm: 999, receiver: RaftNodeId(id: "123"), sender: RaftNodeId(id: "456"), kind: RaftRpcMessageType.AppendRequest, appendRequest: RaftRpcAppendRequest(previousTerm: 1, previousLogIndex: 0, commitIndex: 0, entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty, empty: true)]))
+        check msg.toBinary().toHex == "00000000000003e734353631323302000000000000000100000000000000000000000000000000000000000000000100000000000000010201"
+      block:
+        let msg = LogEntry(term: 1, index: 1, kind: rletEmpty, empty: true)
+        check msg.toBinary().toHex == "000000000000000100000000000000010201"
 
 if isMainModule:
   blsconsensusMain()
