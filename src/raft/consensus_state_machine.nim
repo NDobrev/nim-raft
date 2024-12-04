@@ -128,8 +128,6 @@ type
     heartbeatTime: times.Duration
     timeNow: times.DateTime
     startTime: times.DateTime
-    electionTimeout: times.Duration
-    randomGenerator: Rand
 
     observedState: RaftLastPollState
     state*: RaftStateMachineRefState
@@ -179,6 +177,14 @@ template info*(sm: RaftStateMachineRef, log: string) =
 template critical*(sm: RaftStateMachineRef, log: string) = 
   sm.addDebugLogEntry(DebugLogLevel.Critical, log)
 
+func getLeaderId*(sm: RaftStateMachineRef): Option[RaftNodeId] =
+  if sm.state.isLeader:
+    return some(sm.myId)
+  elif sm.state.isFollower:
+    return some(sm.state.follower.leader)
+  else:
+    return none(RaftNodeId)
+
 func observe*(ps: var RaftLastPollState, sm: RaftStateMachineRef) =
   ps.setTerm sm.term
   ps.setVotedFor sm.votedFor
@@ -194,10 +200,15 @@ func replicationStatus*(sm: var RaftStateMachineRef): string =
     report = report & "=============\n" & $p
   return report
 
-func resetElectionTimeout*(sm: var RaftStateMachineRef) =
-  sm.randomizedElectionTime = sm.electionTimeout + times.initDuration(milliseconds = 100 + sm.randomGenerator.rand(200))
-
-func new*(T: type RaftStateMachineRef, id: RaftnodeId, currentTerm: RaftNodeTerm, log: RaftLog, commitIndex: RaftLogIndex, now: times.DateTime, randomGenerator: Rand): T = 
+func new*(T: type RaftStateMachineRef,
+  id: RaftnodeId,
+  currentTerm: RaftNodeTerm,
+  log: RaftLog,
+  commitIndex: RaftLogIndex,
+  now: times.DateTime,
+  randomizedElectionTime: times.Duration,
+  heartbeatTime: times.Duration,
+  ): T = 
   var sm = T()
   sm.term = currentTerm
   sm.log = log
@@ -207,10 +218,8 @@ func new*(T: type RaftStateMachineRef, id: RaftnodeId, currentTerm: RaftNodeTerm
   sm.timeNow = now
   sm.startTime = now
   sm.myId = id
-  sm.electionTimeout = times.initDuration(milliseconds = 100)
-  sm.heartbeatTime = times.initDuration(milliseconds = 50)
-  sm.randomGenerator = randomGenerator
-  sm.resetElectionTimeout()
+  sm.heartbeatTime = heartbeatTime
+  sm.randomizedElectionTime = randomizedElectionTime
   sm.observedState.observe(sm)
   sm.output = RaftStateMachineRefOutput()
   return sm
@@ -404,7 +413,7 @@ func heartbeat(sm: var RaftStateMachineRef, follower: var RaftFollowerProgressTr
 func tickLeader*(sm: var RaftStateMachineRef, now: times.DateTime) =
   sm.timeNow = now
 
-  if sm.lastElectionTime - sm.timeNow > sm.electionTimeout:
+  if sm.lastElectionTime - sm.timeNow > sm.randomizedElectionTime:
     sm.becomeFollower(RaftnodeId())
     return 
 

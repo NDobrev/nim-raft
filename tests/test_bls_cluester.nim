@@ -257,9 +257,11 @@ proc createBLSCluster(ids: seq[RaftnodeId], now: times.DateTime, k: int, n: int,
   for i in 0..<config.currentSet.len:
       let id = config.currentSet[i]
       var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
-      #echo $log
+      var randGen = initRand(i + 42)
+      let electionTime = times.initDuration(milliseconds = 100) + times.initDuration(milliseconds = 100 + randGen.rand(200))
+      let heartbeatTime = times.initDuration(milliseconds = 50)
       cluster.nodes[id] =   BLSTestNode(
-          stm: RaftStateMachineRef.new(id, 0, log, 0, now, initRand(i + 42)),
+          stm: RaftStateMachineRef.new(id, 0, log, 0, now, electionTime, heartbeatTime),
           keyShare: blsShares[i],
           blockCommunication: false,
           clusterPublicKey: pk,
