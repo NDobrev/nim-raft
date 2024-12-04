@@ -1,12 +1,6 @@
 import types
-import std/sequtils
 import std/strformat
-import stew/byteutils
 import strutils
-import tracker
-
-import posix, os
-
 
 type
   RaftLogEntryType* = enum
@@ -25,7 +19,7 @@ type
     case kind*: RaftLogEntryType:
       of rletCommand: command*: Command
       of rletConfig: config*: RaftConfig
-      of rletEmpty: empty*: bool
+      of rletEmpty: discard
 
   RaftSnapshot* = object
     index*: RaftLogIndex
@@ -146,8 +140,8 @@ func appendAsLeader*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, d
   rf.appendAsLeader(LogEntry(term: term, index: index, kind: rletCommand, command: data))
 
 # Append an empty entry as a leader
-func appendAsLeader*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, empty: bool) =
-  rf.appendAsLeader(LogEntry(term: term, index: index, kind: rletEmpty, empty: true))
+func appendAsLeader*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex) =
+  rf.appendAsLeader(LogEntry(term: term, index: index, kind: rletEmpty))
 
 # Append a command as a follower
 func appendAsFollower*(rf: var RaftLog, term: RaftNodeTerm, index: RaftLogIndex, data: Command) =

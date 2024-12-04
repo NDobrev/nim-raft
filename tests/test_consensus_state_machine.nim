@@ -17,7 +17,6 @@ import std/[sets, times, sequtils, random, algorithm,
 strformat, sugar]
 import stew/byteutils
 
-import uuids
 import tables
 
 proc green*(s: string): string = "\e[32m" & s & "\e[0m"
@@ -150,7 +149,8 @@ proc handleMessage(tc: var TestCluster, now: times.DateTime, msg: RaftRpcMessage
     if tc.nodes.contains(msg.receiver):
       tc.nodes[msg.receiver].advance(msg, now)
     else:
-      echo fmt"Node with id {msg.receiver} is not in the cluster"
+      if DebugLogLevel.Debug <= logLevel:
+        echo fmt"Node with id {msg.receiver} is not in the cluster"
   else:
     if DebugLogLevel.Debug <= logLevel:
       echo "[" & now.format("HH:mm:ss:fff") & "] rpc message is blocked: "  & $msg & $tc.blockedMsgRoutingSet
@@ -509,7 +509,7 @@ proc consensusstatemachineMain*() =
         timeNow += 201.milliseconds
         sm.tick(timeNow)
         output = sm.poll()
-        let entry = LogEntry(term: (output.term + 1), index: 1, kind: RaftLogEntryType.rletEmpty, empty: true)
+        let entry = LogEntry(term: (output.term + 1), index: 1, kind: RaftLogEntryType.rletEmpty)
         let appendRequest = RaftRpcAppendRequest(previousTerm: (output.term + 1), previousLogIndex: 100, commitIndex: 99, entries: @[entry])
         let msg = RaftRpcMessage(currentTerm: (output.term + 1), sender: id2, receiver:id1, kind: RaftRpcMessageType.AppendRequest, appendRequest: appendRequest)
         sm.advance(msg, timeNow)

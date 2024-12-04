@@ -1,5 +1,4 @@
 import unittest
-import ../src/raft/tracker
 import ../src/raft/state
 import ../src/raft
 import std/[times]

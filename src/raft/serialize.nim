@@ -1,5 +1,4 @@
 import binary_serialization
-import strutils
 import std/sequtils
 import consensus_state_machine
 import types

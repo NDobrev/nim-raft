@@ -1,13 +1,11 @@
 import ../src/raft/types
 import ../src/raft/consensus_state_machine
 import ../src/raft/log
-import ../src/raft/tracker
 import ../src/raft/state
 import ../src/raft/serialize
 
 import std/[times, sequtils, random]
 import std/sugar
-import std/sets
 import std/json
 import std/jsonutils
 import std/options
@@ -149,7 +147,6 @@ func `$`*(de: DebugLogEntry): string =
 proc sign(node: BLSTestNode, msg: Message): SignedShare =
     var pk: PublicKey
     discard pk.publicFromSecret(node.keyShare.secret)
-    echo "Produce signature from node: " & $node.stm.myId & " with public key: " & $pk.toHex & "over msg " & $msg.toJson
     return SignedShare(
       sign: node.keyShare.secret.sign(msg.toBytes),
       pubkey: pk,
@@ -182,8 +179,6 @@ proc pollMessages(node: BLSTestNode, logLevel: DebugLogLevel): seq[SignedRpcMess
         continue
       var orgMsg = commitedMsg.command.toMessage
       var shares = node.messageSignatures[orgMsg.fieldInt]
-      echo "Try to recover message" & $orgMsg.toBytes
-      echo "Shares: " & $shares.signs
       var recoveredSignature = recover(shares.signs, shares.ids).expect("valid shares")
       if not node.clusterPublicKey.verify(orgMsg.toBytes, recoveredSignature):
         node.us.lastCommitedMsg = orgMsg
@@ -288,10 +283,11 @@ proc advance*(tc: var BLSTestCluster, now: times.DateTime, logLevel: DebugLogLev
       tc.delayer.add(msg, now) 
 
   var msgs = tc.delayer.getMessages(now)
-  msgs.printByType RaftRpcMessageType.AppendRequest, red
-  msgs.printByType RaftRpcMessageType.AppendReply, green
-  msgs.printByType RaftRpcMessageType.VoteRequest, yellow
-  msgs.printByType RaftRpcMessageType.VoteReply, purple
+  if logLevel == DebugLogLevel.Debug:
+    msgs.printByType RaftRpcMessageType.AppendRequest, red
+    msgs.printByType RaftRpcMessageType.AppendReply, green
+    msgs.printByType RaftRpcMessageType.VoteRequest, yellow
+    msgs.printByType RaftRpcMessageType.VoteReply, purple
   for msg in msgs:
     tc.nodes[msg.raftMsg.receiver].acceptMessage(msg, now)
     
@@ -308,7 +304,6 @@ proc submitMessage(tc: var BLSTestCluster, msg: Message): bool =
   if leader.isSome():
     var pk: PublicKey
     discard pk.publicFromSecret(leader.get.keyShare.secret)
-    echo "Leader Sign message" & $msg.toBytes
     var share = leader.get().sign(msg)
     if not leader.get.messageSignatures.hasKey(msg.fieldInt):
       leader.get.messageSignatures[msg.fieldInt] = @[]
@@ -352,19 +347,17 @@ proc blsconsensusMain*() =
           added = cluster.submitMessage(Message(fieldInt: 42))
         timeNow +=  5.milliseconds
         if cluster.getLeader().isSome():
-          #echo cluster.getLeader().get.us.lastCommitedMsg
-          echo cluster.getLeader().get.us.lastCommitedMsg
           if cluster.getLeader().get.us.lastCommitedMsg.fieldInt == 42:
             commited = true
             #break
       check commited == true
     test "Raft rpc binary serialization":
       block:
-        let msg = RaftRpcMessage(currentTerm: 999, receiver: RaftNodeId(id: "123"), sender: RaftNodeId(id: "456"), kind: RaftRpcMessageType.AppendRequest, appendRequest: RaftRpcAppendRequest(previousTerm: 1, previousLogIndex: 0, commitIndex: 0, entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty, empty: true)]))
-        check msg.toBinary().toHex == "00000000000003e734353631323302000000000000000100000000000000000000000000000000000000000000000100000000000000010201"
+        let msg = RaftRpcMessage(currentTerm: 999, receiver: RaftNodeId(id: "123"), sender: RaftNodeId(id: "456"), kind: RaftRpcMessageType.AppendRequest, appendRequest: RaftRpcAppendRequest(previousTerm: 1, previousLogIndex: 0, commitIndex: 0, entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty)]))
+        check msg.toBinary().toHex == "00000000000003e7343536313233020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
       block:
-        let msg = LogEntry(term: 1, index: 1, kind: rletEmpty, empty: true)
-        check msg.toBinary().toHex == "000000000000000100000000000000010201"
+        let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
+        check msg.toBinary().toHex == "0000000000000001000000000000000102"
 
 if isMainModule:
   blsconsensusMain()

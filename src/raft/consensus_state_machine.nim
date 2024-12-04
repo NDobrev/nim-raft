@@ -15,7 +15,6 @@ import config
 import poll_state
 
 import std/[times]
-import std/random
 import std/strformat
 
 
@@ -340,7 +339,7 @@ func addEntry*(sm: var RaftStateMachineRef, config: RaftConfig): LogEntry = {.ca
   sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletConfig, config: config))
 
 func addEntry*(sm: var RaftStateMachineRef, dummy: Empty): LogEntry =
-  sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletEmpty, empty: true))
+  sm.addEntry(LogEntry(term: sm.term, index: sm.log.nextIndex, kind: rletEmpty))
 
 func becomeFollower*(sm: var RaftStateMachineRef, leaderId: RaftNodeId) =
   if sm.myId == leaderId:
