@@ -255,7 +255,7 @@ proc establishLeader(tc: var TestCluster, start: times.DateTime, step: times.Tim
 proc submitNewConfig(tc: var TestCluster, cfg: RaftConfig) = 
   var leader = tc.getLeader()
   if leader.isSome():
-    leader.get().addEntry(cfg)
+    discard leader.get().addEntry(cfg)
   else:
     raise newException(AssertionDefect, "Can submit new configuration")
 
