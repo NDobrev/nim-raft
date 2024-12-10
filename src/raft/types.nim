@@ -12,18 +12,14 @@
 import std/rlocks
 import options
 import stew/results
-import uuids
+
 import chronos
 
 export
   results,
   options,
   rlocks,
-  uuids,
   chronos
-
-const
-  DefaultUUID* = initUUID(0, 0)             # 00000000-0000-0000-0000-000000000000
 
 type
   RaftNodeId* = object
