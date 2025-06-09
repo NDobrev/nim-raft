@@ -35,7 +35,7 @@ func initLeader*(
     cfg: RaftConfig, index: RaftLogIndex, now: times.DateTime
 ): RaftStateMachineRefState =
   var state =
-    RaftStateMachineRefState(state: RaftnodeState.rnsLeader, leader: LeaderState())
+    RaftStateMachineRefState(state: RaftNodeState.rnsLeader, leader: LeaderState())
   state.leader.tracker = RaftTracker.init(cfg, index, now)
   state
 
@@ -46,7 +46,7 @@ func initFollower*(leaderId: RaftNodeId): RaftStateMachineRefState =
 
 func initCandidate*(cfg: RaftConfig): RaftStateMachineRefState =
   RaftStateMachineRefState(
-    state: RaftnodeState.rnsCandidate,
+    state: RaftNodeState.rnsCandidate,
     candidate: CandidateState(votes: RaftVotes.init(cfg)),
   )
 

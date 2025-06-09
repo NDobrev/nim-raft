@@ -42,7 +42,7 @@ type
   DebugLogEntry* = object
     level*: DebugLogLevel
     time*: times.DateTime
-    nodeId*: RaftnodeId
+    nodeId*: RaftNodeId
     term*: RaftNodeTerm
     state*: RaftNodeState
     msg*: string
@@ -223,7 +223,7 @@ func replicationStatus*(sm: RaftStateMachineRef): string =
 
 func new*(
     T: type RaftStateMachineRef,
-    id: RaftnodeId,
+    id: RaftNodeId,
     currentTerm: RaftNodeTerm,
     log: RaftLog,
     commitIndex: RaftLogIndex,
@@ -246,10 +246,10 @@ func new*(
   sm.output = RaftStateMachineRefOutput()
   return sm
 
-func currentLeader(sm: RaftStateMachineRef): RaftnodeId =
+func currentLeader(sm: RaftStateMachineRef): RaftNodeId =
   if sm.state.isFollower:
     return sm.state.follower.leader
-  RaftnodeId()
+  RaftNodeId()
 
 func findFollowerProggressById(
     sm: RaftStateMachineRef, id: RaftNodeId
@@ -438,7 +438,7 @@ func becomeFollower*(sm: RaftStateMachineRef, leaderId: RaftNodeId) =
     sm.error "Can't be follower of itself"
   sm.output.stateChange = not sm.state.isFollower
   sm.state = initFollower(leaderId)
-  if leaderId != RaftnodeId():
+  if leaderId != RaftNodeId():
     sm.pingLeader = false
     sm.lastElectionTime = sm.timeNow
   sm.debug "Become follower with leader" & $leaderId
@@ -509,7 +509,7 @@ func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
   sm.timeNow = now
 
   if sm.lastElectionTime - sm.timeNow > sm.randomizedElectionTime:
-    sm.becomeFollower(RaftnodeId())
+    sm.becomeFollower(RaftNodeId())
     return
 
   sm.lastElectionTime = now
@@ -598,7 +598,7 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
     for i in (observedCommitIndex + 1) .. sm.commitIndex:
       sm.output.committed.add(sm.log.getEntryByIndex(i))
 
-  if sm.votedFor != RaftnodeId():
+  if sm.votedFor != RaftNodeId():
     sm.output.votedFor = some(sm.votedFor)
   sm.observedState.observe(sm)
   var output = RaftStateMachineRefOutput()
@@ -732,7 +732,7 @@ func requestVoteReply*(
     sm.becomeFollower(RaftNodeId())
 
 func installSnapshotReplay(
-    sm: RaftStateMachineRef, fromId: RaftnodeId, replay: RaftSnapshotReply
+    sm: RaftStateMachineRef, fromId: RaftNodeId, replay: RaftSnapshotReply
 ) =
   let follower = sm.findFollowerProggressById(fromId)
   if not follower.isSome:
@@ -749,13 +749,13 @@ func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime)
   if msg.currentTerm > sm.term:
     sm.debug "Current node is behind my term:" & $sm.term & " message term:" &
       $msg.currentTerm
-    var leaderId = RaftnodeId()
+    var leaderId = RaftNodeId()
     if msg.kind == RaftRpcMessageType.AppendRequest or
         msg.kind == RaftRpcMessageType.InstallSnapshot:
       leaderId = msg.sender
     sm.becomeFollower(leaderId)
     sm.term = msg.currentTerm
-    sm.votedFor = RaftnodeId()
+    sm.votedFor = RaftNodeId()
   elif msg.currentTerm < sm.term:
     if msg.kind == RaftRpcMessageType.AppendRequest:
       # Instruct leader to step down
