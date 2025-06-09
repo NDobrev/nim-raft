@@ -29,7 +29,7 @@ type
   Hash = int
 
   UserState* = object
-    lastCommitedMsg: Message
+    lastcommittedMsg: Message
 
   SignedLogEntry = object
     hash: Hash
@@ -163,19 +163,19 @@ proc pollMessages(node: BLSTestNode, logLevel: DebugLogLevel): seq[SignedRpcMess
     if msg.kind == RaftRpcMessageType.AppendReply:
       msgs.add(SignedRpcMessage(raftMsg: msg, signEntries: node.signEntries))
       let commitIndex = msg.appendReply.commitIndex
-      # remove the signature of all entries that are already commited
+      # remove the signature of all entries that are already committed
       node.signEntries = node.signEntries.filter(x => x.logIndex > commitIndex)
     else:
       msgs.add(SignedRpcMessage(raftMsg: msg, signEntries: @[]))
   if node.stm.state.isLeader:
-    for commitedMsg in output.committed:
-      if commitedMsg.kind != rletCommand:
+    for committedMsg in output.committed:
+      if committedMsg.kind != rletCommand:
         continue
-      var orgMsg = commitedMsg.command.toMessage
+      var orgMsg = committedMsg.command.toMessage
       var shares = node.messageSignatures[orgMsg.fieldInt]
       var recoveredSignature = recover(shares.signs, shares.ids).expect("valid shares")
       if not node.clusterPublicKey.verify(orgMsg.toBytes, recoveredSignature):
-        node.us.lastCommitedMsg = orgMsg
+        node.us.lastcommittedMsg = orgMsg
         echo "State succesfuly changed"
       else:
         echo "Failed to reconstruct signature"
@@ -352,17 +352,17 @@ proc blsconsensusMain*() =
       cluster.advance(timeNow)
 
       var added = false
-      var commited = false
+      var committed = false
       for i in 0 ..< 10:
         cluster.advance(timeNow)
         if cluster.getLeader().isSome() and not added:
           added = cluster.submitMessage(Message(fieldInt: 42))
         timeNow += 5.milliseconds
         if cluster.getLeader().isSome():
-          if cluster.getLeader().get.us.lastCommitedMsg.fieldInt == 42:
-            commited = true
+          if cluster.getLeader().get.us.lastcommittedMsg.fieldInt == 42:
+            committed = true
             #break
-      check commited == true
+      check committed
     test "Raft rpc binary serialization":
       block:
         let msg = RaftRpcMessage(

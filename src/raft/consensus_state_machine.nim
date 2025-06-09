@@ -251,7 +251,7 @@ func currentLeader(sm: RaftStateMachineRef): RaftNodeId =
     return sm.state.follower.leader
   RaftNodeId()
 
-func findFollowerProggressById(
+func findFollowerProgressById(
     sm: RaftStateMachineRef, id: RaftNodeId
 ): Option[RaftFollowerProgressTrackerRef] =
   sm.leader.tracker.find(id)
@@ -341,7 +341,7 @@ func applySnapshot*(sm: RaftStateMachineRef, snapshot: RaftSnapshot): bool =
 
 func sendTo[MsgType](sm: RaftStateMachineRef, id: RaftNodeId, request: MsgType) =
   if sm.state.isLeader:
-    var follower = sm.findFollowerProggressById(id)
+    var follower = sm.findFollowerProgressById(id)
     if follower.isSome:
       follower.get().lastMessageAt = sm.timeNow
     else:
@@ -399,7 +399,7 @@ func addEntry(sm: RaftStateMachineRef, entry: LogEntry): LogEntry =
 
   if entry.kind == rletConfig:
     if sm.log.lastConfigIndex > sm.commitIndex or sm.log.configuration.isJoint:
-      sm.error "The previous configuration is not commited yet"
+      sm.error "The previous configuration is not committed yet"
       return
     sm.debug "Configuration change"
     # 4.3. Arbitrary configuration changes using joint consensus
@@ -455,6 +455,7 @@ func becomeLeader*(sm: RaftStateMachineRef) =
   discard sm.addEntry(Empty())
   sm.pingLeader = false
   sm.lastElectionTime = sm.timeNow
+  sm.info "Become leader"
   return
 
 func becomeCandidate*(sm: RaftStateMachineRef) =
@@ -506,9 +507,11 @@ func heartbeat(sm: RaftStateMachineRef, follower: var RaftFollowerProgressTracke
   sm.sendTo(follower.id, request)
 
 func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
+  assert sm.timeNow <= now
   sm.timeNow = now
-
-  if sm.lastElectionTime - sm.timeNow > sm.randomizedElectionTime:
+  
+  if sm.timeNow - sm.lastElectionTime >= sm.randomizedElectionTime:
+    sm.info "Election timeout"
     sm.becomeFollower(RaftNodeId())
     return
 
@@ -606,9 +609,9 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
   if sm.state.isLeader and output.logEntries.len > 0:
     sm.debug "Leader accept index: " &
       $output.logEntries[output.logEntries.len - 1].index
-    var leaderProgress = sm.findFollowerProggressById(sm.myId)
+    var leaderProgress = sm.findFollowerProgressById(sm.myId)
     if not leaderProgress.isSome:
-      return
+      return output
     leaderProgress.get().accepted(output.logEntries[output.logEntries.len - 1].index)
     sm.commit()
   output
@@ -619,7 +622,7 @@ func appendEntryReply*(
   if not sm.state.isLeader:
     sm.debug "You can't append append reply to the follower"
     return
-  var follower = sm.findFollowerProggressById(fromId)
+  var follower = sm.findFollowerProgressById(fromId)
   if not follower.isSome:
     sm.debug "Can't find the follower"
     return
@@ -643,7 +646,7 @@ func appendEntryReply*(
     sm.debug $follower.get()
   # if commit apply configuration that removes current follower 
   # we should take it again
-  var follower2 = sm.findFollowerProggressById(fromId)
+  var follower2 = sm.findFollowerProgressById(fromId)
   if follower2.isSome:
     sm.replicateTo(follower2.get())
 
@@ -734,7 +737,7 @@ func requestVoteReply*(
 func installSnapshotReplay(
     sm: RaftStateMachineRef, fromId: RaftNodeId, replay: RaftSnapshotReply
 ) =
-  let follower = sm.findFollowerProggressById(fromId)
+  let follower = sm.findFollowerProgressById(fromId)
   if not follower.isSome:
     return
 

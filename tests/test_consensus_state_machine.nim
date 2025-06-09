@@ -36,11 +36,11 @@ proc red*(s: string): string =
 type
   TestNode* = object
     sm: RaftStateMachineRef
-    markedForDelection: bool
+    markedForElection: bool
 
   TestCluster* = object
     nodes: Table[RaftnodeId, TestNode]
-    commited: seq[LogEntry]
+    committed: seq[LogEntry]
     blockedTickSet: HashSet[RaftnodeId]
     blockedMsgRoutingSet: HashSet[RaftnodeId]
 
@@ -96,7 +96,7 @@ proc createCluster(ids: seq[RaftnodeId], now: times.DateTime): TestCluster =
     let heartbeatTime = times.initDuration(milliseconds = 50)
     var node = TestNode(
       sm: RaftStateMachineRef.new(id, 0, log, 0, now, electionTime, heartbeatTime),
-      markedForDelection: false,
+      markedForElection: false,
     )
     cluster.nodes[id] = node
   return cluster
@@ -116,7 +116,7 @@ proc addNodeToCluster(
   let heartbeatTime = times.initDuration(milliseconds = 50)
   var node = TestNode(
     sm: RaftStateMachineRef.new(id, 0, log, 0, now, electionTime, heartbeatTime),
-    markedForDelection: false,
+    markedForElection: false,
   )
   if tc.nodes.contains(id):
     raise newException(AssertionDefect, "Adding node to the cluster that already exist")
@@ -135,7 +135,7 @@ proc addNodeToCluster(
     tc.addNodeToCluster(id, now, config, initRand(nodeSeed))
 
 proc markNodeForDelection(tc: var TestCluster, id: RaftnodeId) =
-  tc.nodes[id].markedForDelection = true
+  tc.nodes[id].markedForElection = true
 
 proc removeNodeFromCluster(tc: var TestCluster, id: RaftnodeId) =
   tc.nodes.del(id)
@@ -199,7 +199,7 @@ proc advance(
   var debugLogs: seq[DebugLogEntry]
 
   for id, node in tc.nodes:
-    if node.markedForDelection:
+    if node.markedForElection:
       continue
     if tc.blockedTickSet.contains(id):
       continue
@@ -209,11 +209,11 @@ proc advance(
     for msg in output.messages:
       tc.handleMessage(now, msg, logLevel)
     for entry in output.committed:
-      tc.commited.add(entry)
+      tc.committed.add(entry)
       if not tc.onEntryCommit.isNil:
         tc.onEntryCommit(id, entry)
 
-  let toDelete = toSeq(tc.nodes.values).filter(node => node.markedForDelection)
+  let toDelete = toSeq(tc.nodes.values).filter(node => node.markedForElection)
   for node in toDelete:
     tc.removeNodeFromCluster(node.sm.myId)
 
@@ -269,14 +269,14 @@ proc submitCommand(tc: var TestCluster, cmd: Command): bool =
     return true
   return false
 
-proc hasCommitedEntry(tc: var TestCluster, cmd: Command): bool =
-  for ce in tc.commited:
+proc hascommittedEntry(tc: var TestCluster, cmd: Command): bool =
+  for ce in tc.committed:
     if ce.kind == RaftLogEntryType.rletCommand and ce.command == cmd:
       return true
   return false
 
-proc hasCommitedEntry(tc: var TestCluster, cfg: RaftConfig): bool =
-  for ce in tc.commited:
+proc hascommittedEntry(tc: var TestCluster, cfg: RaftConfig): bool =
+  for ce in tc.committed:
     if ce.kind == RaftLogEntryType.rletConfig and ce.config == cfg:
       return true
   return false
@@ -509,7 +509,7 @@ proc consensusstatemachineMain*() =
       sm.tick(timeNow)
       var output = sm.poll()
       # When the node became a leader it will produce empty message in the log 
-      # and because we have single node in the cluster the empty message will be commited on the next tick
+      # and because we have single node in the cluster the empty message will be committed on the next tick
       check output.logEntries.len == 1
       check output.committed.len == 0
       check output.messages.len == 0
@@ -818,6 +818,50 @@ proc consensusstatemachineMain*() =
           secondLeaderId = maybeLeader.get().myId
           cluster.allowMsgRouting(firstLeaderId)
 
+    test "leader steps down when ticks are blocked":
+      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+      var cluster = createCluster(test_ids_3, timeNow)
+      timeNow = cluster.establishLeader(timeNow)
+
+      let leaderId = cluster.getLeader.get.myId
+      cluster.blockTick(leaderId)
+      cluster.blockMsgRouting(leaderId)
+
+      timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
+
+      let newLeader = cluster.getLeader()
+      check newLeader.isSome()
+      check newLeader.get.myId != leaderId
+
+      cluster.allowTick(leaderId)
+      cluster.allowMsgRouting(leaderId)
+      timeNow += 5.milliseconds
+      cluster.advance(timeNow)
+
+      check cluster.nodes[leaderId].sm.state.isFollower
+
+    test "leader stays leader when elapsed equals timeout":
+      echo "leader stays leader when elapsed equals timeout"
+      var now = dateTime(2017, mMar, 1, 0, 0, 0, 0, utc())
+      let electionTimeout = times.initDuration(milliseconds = 100)
+      let heartbeatTime = times.initDuration(milliseconds = 50)
+      let id = RaftNodeId(id: "12323749802409131")
+      var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: RaftConfig()))
+      var sm = RaftStateMachineRef.new(id, RaftNodeTerm(0), log, RaftLogIndex(0), now, electionTimeout, heartbeatTime)
+      sm.becomeLeader()
+      check sm.state.isLeader
+
+      now += electionTimeout - times.initDuration(milliseconds = 1)
+      sm.tickLeader(now)
+      discard sm.poll()
+      check sm.state.isLeader
+
+      now += electionTimeout
+      sm.tickLeader(now)
+      discard  sm.poll()
+      check sm.state.isFollower
+
+
   suite "config change":
     test "1 node":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
@@ -865,8 +909,8 @@ proc consensusstatemachineMain*() =
       check currentConfig.isSome
       cfg = currentConfig.get()
 
-      check cluster.hasCommitedEntry("abc".toCommand)
-      check cluster.hasCommitedEntry("bcd".toCommand)
+      check cluster.hascommittedEntry("abc".toCommand)
+      check cluster.hascommittedEntry("bcd".toCommand)
 
     test "add node":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
@@ -905,7 +949,7 @@ proc consensusstatemachineMain*() =
       timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
       check cluster.submitCommand("abc".toCommand)
       timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
-      check cluster.hasCommitedEntry("abc".toCommand)
+      check cluster.hascommittedEntry("abc".toCommand)
 
     test "add entrie during config chage":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
@@ -917,23 +961,23 @@ proc consensusstatemachineMain*() =
       check cluster.submitCommand("fgh".toCommand)
       timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
       # The second node is not added
-      check not cluster.hasCommitedEntry("abc".toCommand)
-      check not cluster.hasCommitedEntry("fgh".toCommand)
+      check not cluster.hascommittedEntry("abc".toCommand)
+      check not cluster.hascommittedEntry("fgh".toCommand)
 
       var currentConfig = cluster.configuration()
       check currentConfig.isSome
       var cfg = currentConfig.get()
       cluster.addNodeToCluster(test_ids_1, timeNow, cfg)
       timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      check cluster.hasCommitedEntry("abc".toCommand)
-      check cluster.hasCommitedEntry("fgh".toCommand)
+      check cluster.hascommittedEntry("abc".toCommand)
+      check cluster.hascommittedEntry("fgh".toCommand)
 
       newConfig = createConfigFromIds(test_ids_1)
       cluster.submitNewConfig(newConfig)
 
       check cluster.submitCommand("phg".toCommand)
       timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      check cluster.hasCommitedEntry("phg".toCommand)
+      check cluster.hascommittedEntry("phg".toCommand)
 
       timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
       currentConfig = cluster.configuration()
@@ -949,10 +993,10 @@ proc consensusstatemachineMain*() =
       check cluster.submitCommand("xyz".toCommand)
       check cluster.getLeader().isSome
       timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      check cluster.hasCommitedEntry("phg".toCommand)
-      check cluster.hasCommitedEntry("abc".toCommand)
-      check cluster.hasCommitedEntry("fgh".toCommand)
-      check cluster.hasCommitedEntry("xyz".toCommand)
+      check cluster.hascommittedEntry("phg".toCommand)
+      check cluster.hascommittedEntry("abc".toCommand)
+      check cluster.hascommittedEntry("fgh".toCommand)
+      check cluster.hascommittedEntry("xyz".toCommand)
 
     test "Leader stop responding config change":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
@@ -961,7 +1005,7 @@ proc consensusstatemachineMain*() =
       timeNow = cluster.establishLeader(timeNow)
       check cluster.submitCommand("abc".toCommand)
       timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
-      check cluster.hasCommitedEntry("abc".toCommand)
+      check cluster.hascommittedEntry("abc".toCommand)
 
       var newConfig = createConfigFromIds(test_ids_1)
       cluster.submitNewConfig(newConfig)
@@ -984,7 +1028,7 @@ proc consensusstatemachineMain*() =
 
       check cluster.submitCommand("phg".toCommand)
       timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
-      check cluster.hasCommitedEntry("phg".toCommand)
+      check cluster.hascommittedEntry("phg".toCommand)
       timeNow = cluster.establishLeader(timeNow)
 
       cluster.removeNodeFromCluster(test_second_ids_3)
@@ -992,10 +1036,10 @@ proc consensusstatemachineMain*() =
 
       check cluster.submitCommand("qwe".toCommand)
       timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
-      check cluster.hasCommitedEntry("qwe".toCommand)
-      check cluster.hasCommitedEntry("phg".toCommand)
-      check not cluster.hasCommitedEntry("xyz".toCommand)
-      check cluster.hasCommitedEntry("abc".toCommand)
+      check cluster.hascommittedEntry("qwe".toCommand)
+      check cluster.hascommittedEntry("phg".toCommand)
+      check not cluster.hascommittedEntry("xyz".toCommand)
+      check cluster.hascommittedEntry("abc".toCommand)
 
     test "Leader stop responding during config change":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
