@@ -93,6 +93,7 @@ func isUpToDate*(rf: RaftLog, index: RaftLogIndex, term: RaftNodeTerm): bool =
   term > lastTerm or (term == lastTerm and index >= lastIndex)
 
 func getEntryByIndex*(rf: RaftLog, index: RaftLogIndex): LogEntry =
+  doAssert index >= rf.firstIndex, "Index out of bounds" & $index & " < " & $rf.firstIndex
   rf.logEntries[index - rf.firstIndex]
 
 func append(rf: var RaftLog, entry: LogEntry) =
@@ -102,6 +103,8 @@ func append(rf: var RaftLog, entry: LogEntry) =
     rf.lastConfigIndex = entry.index
 
 func appendAsLeader*(rf: var RaftLog, entry: LogEntry) =
+  doAssert entry.index == rf.nextIndex,
+    fmt"invalid log index: got {entry.index}, expected {rf.nextIndex}"
   rf.append(entry)
 
 func appendAsFollower*(rf: var RaftLog, entry: LogEntry) =

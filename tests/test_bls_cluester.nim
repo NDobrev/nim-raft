@@ -29,7 +29,7 @@ type
   Hash = int
 
   UserState* = object
-    lastcommittedMsg: Message
+    lastCommittedMsg: Message
 
   SignedLogEntry = object
     hash: Hash
@@ -78,12 +78,12 @@ var secretKey = "1b500388741efd98239a9b3a689721a89a92e8b209aabb10fb7dc3f844976dc
 
 var test_ids_3 =
   @[
-    RaftnodeId(id: "a8409b39-f17b-4682-aaef-a19cc9f356fb"),
-    RaftnodeId(id: "2a98fc33-6559-44c0-b130-fc3e9df80a69"),
-    RaftnodeId(id: "9156756d-697f-4ffa-9b82-0c86720344bd"),
+    newRaftNodeId( "a8409b39-f17b-4682-aaef-a19cc9f356fb"),
+    newRaftNodeId( "2a98fc33-6559-44c0-b130-fc3e9df80a69"),
+    newRaftNodeId( "9156756d-697f-4ffa-9b82-0c86720344bd"),
   ]
 
-var test_ids_1 = @[RaftnodeId(id: "a8409b39-f17b-4682-aaef-a19cc9f356fb")]
+var test_ids_1 = @[newRaftNodeId( "a8409b39-f17b-4682-aaef-a19cc9f356fb")]
 
 proc initDelayer(
     mean: float, std: float, minInMs: int, generator: Rand
@@ -326,29 +326,19 @@ proc submitMessage(tc: var BLSTestCluster, msg: Message): bool =
     return true
   return false
 
-proc blsconsensusMain*() =
-  suite "BLS consensus tests":
-    test "create single node cluster":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var delayer = initDelayer(3, 3, 1, initRand(42))
-      var cluster = createBLSCluster(test_ids_1, timeNow, 1, 1, delayer)
 
-      timeNow += 300.milliseconds
-      cluster.advance(timeNow)
-      discard cluster.submitMessage(Message(fieldInt: 1))
-      discard cluster.submitMessage(Message(fieldInt: 2))
-      for i in 0 ..< 305:
-        timeNow += 5.milliseconds
-        cluster.advance(timeNow)
+suite "BLS consensus tests":
+  test "create single node cluster":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var delayer = initDelayer(3, 3, 1, initRand(42))
+    var cluster = createBLSCluster(test_ids_1, timeNow, 1, 1, delayer)
 
-    test "create 3 node cluster":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var delayer = initDelayer(3, 0, 1, initRand(42))
-      var cluster = createBLSCluster(test_ids_3, timeNow, 2, 3, delayer)
-
-      # skip time until first election
-      timeNow += 200.milliseconds
-
+    timeNow += 300.milliseconds
+    cluster.advance(timeNow)
+    discard cluster.submitMessage(Message(fieldInt: 1))
+    discard cluster.submitMessage(Message(fieldInt: 2))
+    for i in 0 ..< 305:
+      timeNow += 5.milliseconds
       cluster.advance(timeNow)
 
       var added = false
@@ -382,6 +372,44 @@ proc blsconsensusMain*() =
       block:
         let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
         check msg.toBinary().toHex == "0000000000000001000000000000000102"
+  test "create 3 node cluster":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var delayer = initDelayer(3, 0, 1, initRand(42))
+    var cluster = createBLSCluster(test_ids_3, timeNow, 2, 3, delayer)
 
-if isMainModule:
-  blsconsensusMain()
+    # skip time until first election
+    timeNow += 200.milliseconds
+
+    cluster.advance(timeNow)
+
+    var added = false
+    var commited = false
+    for i in 0 ..< 10:
+      cluster.advance(timeNow)
+      if cluster.getLeader().isSome() and not added:
+        added = cluster.submitMessage(Message(fieldInt: 42))
+      timeNow += 5.milliseconds
+      if cluster.getLeader().isSome():
+        if cluster.getLeader().get.us.lastCommittedMsg.fieldInt == 42:
+          commited = true
+          #break
+    check commited == true
+  test "Raft rpc binary serialization":
+    block:
+      let msg = RaftRpcMessage(
+        currentTerm: 999,
+        receiver: newRaftNodeId( "123"),
+        sender: newRaftNodeId( "456"),
+        kind: RaftRpcMessageType.AppendRequest,
+        appendRequest: RaftRpcAppendRequest(
+          previousTerm: 1,
+          previousLogIndex: 0,
+          commitIndex: 0,
+          entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty)],
+        ),
+      )
+      check msg.toBinary().toHex ==
+        "00000000000003e7343536313233020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
+    block:
+      let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
+      check msg.toBinary().toHex == "0000000000000001000000000000000102"
