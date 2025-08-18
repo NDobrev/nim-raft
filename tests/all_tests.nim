@@ -11,9 +11,7 @@ import test_consensus_state_machine
 import test_log
 import test_state
 import test_bls_cluester
-import test_serialization
 export test_log
 export test_state
 export test_bls_cluester
 export test_consensus_state_machine
-export test_serialization
