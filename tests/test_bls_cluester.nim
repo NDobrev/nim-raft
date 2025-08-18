@@ -329,49 +329,59 @@ proc submitMessage(tc: var BLSTestCluster, msg: Message): bool =
 
 suite "BLS consensus tests":
   test "create single node cluster":
-    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-    var delayer = initDelayer(3, 3, 1, initRand(42))
-    var cluster = createBLSCluster(test_ids_1, timeNow, 1, 1, delayer)
+        var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+        var delayer = initDelayer(3, 3, 1, initRand(42))
+        var cluster = createBLSCluster(test_ids_1, timeNow, 1, 1, delayer)
 
-    timeNow += 300.milliseconds
-    cluster.advance(timeNow)
-    discard cluster.submitMessage(Message(fieldInt: 1))
-    discard cluster.submitMessage(Message(fieldInt: 2))
-    for i in 0 ..< 305:
-      timeNow += 5.milliseconds
-      cluster.advance(timeNow)
-
-      var added = false
-      var committed = false
-      for i in 0 ..< 10:
+        timeNow += 300.milliseconds
         cluster.advance(timeNow)
-        if cluster.getLeader().isSome() and not added:
-          added = cluster.submitMessage(Message(fieldInt: 42))
-        timeNow += 5.milliseconds
-        if cluster.getLeader().isSome():
-          if cluster.getLeader().get.us.lastcommittedMsg.fieldInt == 42:
-            committed = true
-            #break
-      check committed
-    test "Raft rpc binary serialization":
-      block:
-        let msg = RaftRpcMessage(
-          currentTerm: 999,
-          receiver: RaftNodeId(id: "123"),
-          sender: RaftNodeId(id: "456"),
-          kind: RaftRpcMessageType.AppendRequest,
-          appendRequest: RaftRpcAppendRequest(
-            previousTerm: 1,
-            previousLogIndex: 0,
-            commitIndex: 0,
-            entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty)],
-          ),
-        )
-        check msg.toBinary().toHex ==
-          "00000000000003e7343536313233020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
-      block:
-        let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
-        check msg.toBinary().toHex == "0000000000000001000000000000000102"
+        discard cluster.submitMessage(Message(fieldInt: 1))
+        discard cluster.submitMessage(Message(fieldInt: 2))
+        for i in 0 ..< 305:
+          timeNow += 5.milliseconds
+          cluster.advance(timeNow)
+
+  test "create 3 node cluster":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var delayer = initDelayer(3, 0, 1, initRand(42))
+    var cluster = createBLSCluster(test_ids_3, timeNow, 2, 3, delayer)
+
+    # skip time until first election
+    timeNow += 200.milliseconds
+
+    cluster.advance(timeNow)
+
+    var added = false
+    var committed = false
+    for i in 0 ..< 10:
+      cluster.advance(timeNow)
+      if cluster.getLeader().isSome() and not added:
+        added = cluster.submitMessage(Message(fieldInt: 42))
+      timeNow += 5.milliseconds
+      if cluster.getLeader().isSome():
+        if cluster.getLeader().get.us.lastcommittedMsg.fieldInt == 42:
+          committed = true
+          #break
+    check committed
+  test "Raft rpc binary serialization":
+    block:
+      let msg = RaftRpcMessage(
+        currentTerm: 999,
+        receiver: RaftNodeId(id: "123"),
+        sender: RaftNodeId(id: "456"),
+        kind: RaftRpcMessageType.AppendRequest,
+        appendRequest: RaftRpcAppendRequest(
+          previousTerm: 1,
+          previousLogIndex: 0,
+          commitIndex: 0,
+          entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty)],
+        ),
+      )
+      check msg.toBinary().toHex ==
+        "00000000000003e72869643a202234353622292869643a20223132332229020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
+    block:
+      let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
+      check msg.toBinary().toHex == "0000000000000001000000000000000102"
   test "create 3 node cluster":
     var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
     var delayer = initDelayer(3, 0, 1, initRand(42))
@@ -409,7 +419,7 @@ suite "BLS consensus tests":
         ),
       )
       check msg.toBinary().toHex ==
-        "00000000000003e7343536313233020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
+        "00000000000003e72869643a202234353622292869643a20223132332229020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
     block:
       let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
       check msg.toBinary().toHex == "0000000000000001000000000000000102"
