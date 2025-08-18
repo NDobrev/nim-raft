@@ -152,7 +152,13 @@ func isFollower*(sm: RaftStateMachineRef): bool =
 func isCandidate*(sm: RaftStateMachineRef): bool =
   sm.state.isCandidate
 
-const loglevel {.intdefine.}: int = int(DebugLogLevel.Debug)
+func checkInvariants*(sm: RaftStateMachineRef) =
+  doAssert sm.commitIndex >= sm.log.snapshot.index,
+    fmt"commit index {sm.commitIndex} behind snapshot {sm.log.snapshot.index}"
+  doAssert sm.commitIndex <= sm.log.lastIndex,
+    fmt"commit index {sm.commitIndex} beyond log {sm.log.lastIndex}"
+
+const loglevel {.intdefine.}: int = int(DebugLogLevel.Error)
 
 template addDebugLogEntry(
     smArg: RaftStateMachineRef, levelArg: DebugLogLevel, messageArg: string
@@ -173,19 +179,24 @@ template addDebugLogEntry(
     )
 
 template debug*(sm: RaftStateMachineRef, log: string) =
-  sm.addDebugLogEntry(DebugLogLevel.Debug, log)
+  when loglevel >= int(DebugLogLevel.Debug):
+    sm.addDebugLogEntry(DebugLogLevel.Debug, log)
 
 template warning*(sm: RaftStateMachineRef, log: string) =
-  sm.addDebugLogEntry(DebugLogLevel.Warning, log)
+  when loglevel >= int(DebugLogLevel.Warning):
+    sm.addDebugLogEntry(DebugLogLevel.Warning, log)
 
 template error*(sm: RaftStateMachineRef, log: string) =
-  sm.addDebugLogEntry(DebugLogLevel.Error, log)
+  when loglevel >= int(DebugLogLevel.Error):
+    sm.addDebugLogEntry(DebugLogLevel.Error, log)
 
 template info*(sm: RaftStateMachineRef, log: string) =
-  sm.addDebugLogEntry(DebugLogLevel.Info, log)
+  when loglevel >= int(DebugLogLevel.Info):
+    sm.addDebugLogEntry(DebugLogLevel.Info, log)
 
 template critical*(sm: RaftStateMachineRef, log: string) =
-  sm.addDebugLogEntry(DebugLogLevel.Critical, log)
+  when loglevel >= int(DebugLogLevel.Critical):
+    sm.addDebugLogEntry(DebugLogLevel.Critical, log)
 
 func getLeaderId*(sm: RaftStateMachineRef): Option[RaftNodeId] =
   if sm.state.isLeader:
@@ -234,7 +245,7 @@ func new*(
   var sm = T()
   sm.term = currentTerm
   sm.log = log
-  sm.commitIndex = max(sm.commitIndex, log.snapshot.index)
+  sm.commitIndex = max(log.snapshot.index, min(commitIndex, log.lastIndex))
   sm.state = initFollower(RaftNodeId.empty)
   sm.lastElectionTime = now
   sm.timeNow = now
@@ -244,6 +255,7 @@ func new*(
   sm.randomizedElectionTime = randomizedElectionTime
   sm.observedState.observe(sm)
   sm.output = RaftStateMachineRefOutput()
+  sm.checkInvariants()
   return sm
 
 func currentLeader(sm: RaftStateMachineRef): RaftNodeId =
@@ -339,7 +351,9 @@ func applySnapshot*(sm: RaftStateMachineRef, snapshot: RaftSnapshot, local: bool
   sm.output.applyedSnapshots = some(snapshot)
 
   sm.log.applySnapshot(snapshot)
-  sm.observedState.persistedIndex = max(sm.observedState.persistedIndex, snapshot.index)
+  let newPersistedIndex = max(sm.observedState.persistedIndex, snapshot.index)
+  sm.observedState.persistedIndex = min(newPersistedIndex, sm.log.lastIndex)
+  sm.checkInvariants()
   true
 
 func sendTo[MsgType](sm: RaftStateMachineRef, id: RaftNodeId, request: MsgType) =
@@ -367,16 +381,10 @@ func replicateTo*(sm: RaftStateMachineRef, follower: RaftFollowerProgressTracker
   var previousTerm = sm.log.termForIndex(follower.nextIndex - 1)
   #sm.debug "Replicate to " & $follower[]
   if not previousTerm.isSome:
+    debugEcho follower.nextIndex - 1, sm.log.lastIndex, sm.log.firstIndex, sm.log.entriesCount
     let snapshot = sm.log.snapshot
     sm.sendTo(follower.id, RaftInstallSnapshot(term: sm.term, snapshot: snapshot))
     return
-
-  # TODO: Support batching multiple entries per message.
-  # This can optimize network throughput and reduce overhead,
-  # but may negatively impact bandwidth-constrained scenarios (e.g., lagging nodes).
-  # A configurable batching policy should be provided to the state machine
-  # to dynamically determine the optimal payload size per message.
- 
   var request = RaftRpcAppendRequest(
     previousTerm: previousTerm.get(),
     previousLogIndex: follower.nextIndex - 1,
@@ -455,7 +463,7 @@ func becomeLeader*(sm: RaftStateMachineRef) =
   if sm.state.isLeader:
     sm.error "The leader can't become leader second time"
     return
-
+  sm.debug "Become leader"
   sm.output.stateChange = true
 
   # Because we will add new entry on the next line
@@ -512,6 +520,7 @@ func heartbeat(sm: RaftStateMachineRef, follower: var RaftFollowerProgressTracke
     commitIndex: sm.commitIndex,
     entries: @[],
   )
+  sm.debug "Send heartbeat to " & $follower
   sm.sendTo(follower.id, request)
 
 func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
@@ -536,23 +545,25 @@ func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
         sm.heartbeat(follower)
 
 func tick*(sm: RaftStateMachineRef, now: times.DateTime) =
-  # sm.info "Term: " & $sm.term & " commit idx " & $sm.commitIndex &
-  #   " Time since last update: " & $(now - sm.timeNow).inMilliseconds &
-  #   "ms time until election:" &
-  #   $(sm.randomizedElectionTime - (sm.timeNow - sm.lastElectionTime)).inMilliseconds &
-  #   "ms"
+  sm.info "Term: " & $sm.term & " commit idx " & $sm.commitIndex &
+    " Time since last update: " & $(now - sm.timeNow).inMilliseconds &
+    "ms time until election:" &
+    $(sm.randomizedElectionTime - (sm.timeNow - sm.lastElectionTime)).inMilliseconds &
+    "ms"
   sm.timeNow = now
+
+  sm.debug "Time until election " & $(sm.randomizedElectionTime - (now - sm.lastElectionTime)).inMilliseconds & "ms"
   if sm.state.isLeader:
     sm.tickLeader(now)
   elif sm.timeNow - sm.lastElectionTime > sm.randomizedElectionTime:
     sm.becomeCandidate()
-    sm.debug "Become candidate"
+    
 
 func commit(sm: RaftStateMachineRef) =
   if not sm.state.isLeader:
     return
 
-  doAssert(sm.commitIndex <= sm.log.lastIndex)
+  sm.checkInvariants()
   if sm.commitIndex == sm.log.lastIndex:
     return
 
@@ -571,6 +582,7 @@ func commit(sm: RaftStateMachineRef) =
     return
 
   sm.commitIndex = newCommitIndex
+  sm.checkInvariants()
   if configurationChange:
     sm.debug "committed conf change at log index" & $sm.log.lastIndex
     if sm.log.configuration.isJoint:
@@ -588,12 +600,14 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
     sm.replicate()
     sm.commit()
 
-  # if sm.state.isCandidate:
-  #   sm.debug("Current vote status " & $sm.candidate.votes.current)
+  sm.log.checkInvariant()
+
+  if sm.state.isCandidate:
+    sm.debug("Current vote status " & $sm.candidate.votes.current)
 
   sm.output.term = sm.term
-  # if sm.observedState.persistedIndex > sm.log.lastIndex:
-  #   sm.observedState.setPersistedIndex sm.log.lastIndex
+  if sm.observedState.persistedIndex > sm.log.lastIndex:
+    sm.observedState.setPersistedIndex sm.log.lastIndex
 
   let lastIndex = sm.log.lastIndex
   let persistedIndex = sm.observedState.persistedIndex
@@ -614,8 +628,6 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
 
   let observedCommitIndex = max(sm.observedState.commitIndex, sm.log.snapshot.index)
   if observedCommitIndex < sm.commitIndex:
-    #let commitRangeLen = sm.commitIndex - observedCommitIndex
-    #sm.output.committed: seq[LogEntry] = @[]#newSeqOfCap[LogEntry](commitRangeLen)
     doAssert sm.output.committed.len == 0
     for i in (observedCommitIndex + 1) .. sm.commitIndex:
       sm.output.committed.add(sm.log.getEntryByIndex(i))
@@ -633,7 +645,8 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
       $output.logEntries[output.logEntries.len - 1].index
     var leaderProgress = sm.findFollowerProgressById(sm.myId)
     if not leaderProgress.isSome:
-      return output
+      sm.critical "Leader progress not found"
+      return
     leaderProgress.get().accepted(output.logEntries[output.logEntries.len - 1].index)
     sm.commit()
   output
@@ -704,6 +717,12 @@ func appendEntry*(
   for entry in request.entries:
     sm.log.appendAsFollower(entry)
 
+  if request.entries.len == 0:
+    sm.debug "Handle heartbeat from " & $fromId & "  leader:" & $sm.follower.leader
+   
+  if sm.observedState.persistedIndex > sm.log.lastIndex:
+    sm.observedState.setPersistedIndex sm.log.lastIndex
+
   sm.advanceCommitIdx(request.commitIndex)
   let accepted = RaftRpcAppendReplyAccepted(lastNewIndex: sm.log.lastIndex)
   let responce = RaftRpcAppendReply(
@@ -769,7 +788,7 @@ func installSnapshotReplay(
     sm.replicateTo(follower.get())
 
 func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime) =
-  #sm.debug "Advance with" & $msg
+  sm.debug "Advance with" & $msg
   if msg.receiver != sm.myId:
     sm.debug "Invalid receiver:" & $msg.receiver & $msg
     return
@@ -787,6 +806,7 @@ func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime)
   elif msg.currentTerm < sm.term:
     if msg.kind == RaftRpcMessageType.AppendRequest:
       # Instruct leader to step down
+      sm.debug "Reject to apply the entry and instruct leader to step down" & $sm.term & " " & $msg.currentTerm
       let rejected =
         RaftRpcAppendReplyRejected(nonMatchingIndex: 0, lastIdx: sm.log.lastIndex)
       let responce = RaftRpcAppendReply(
@@ -851,3 +871,4 @@ func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime)
       sm.installSnapshotReplay(msg.sender, msg.snapshotReply)
     else:
       sm.warning "Leader ignore message" & $msg
+  sm.debug "Advance done next election time: " & $(sm.randomizedElectionTime - (now - sm.lastElectionTime)).inMilliseconds & "ms"

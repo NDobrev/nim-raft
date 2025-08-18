@@ -13,6 +13,9 @@ proc writeValue*(w: var BinaryWriter, value: bool) =
 proc writeValue*(w: var BinaryWriter, value: RaftSnapshotId) =
   w.writeValue(uint32(value))
 
+proc writeValue*(w: var BinaryWriter, value: RaftNodeId) =
+  w.writeValue($value)
+
 proc toBinary*(msg: RaftRpcMessage): seq[byte] =
   Binary.encode(msg)
 

@@ -360,6 +360,41 @@ suite "Basic state machine tests":
     )
     timeNow += 5.milliseconds
     sm.tick(timeNow)
+    
+  test "new respects provided commit index":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: RaftNodeTerm(1), config: config))
+    log.appendAsLeader(term = RaftNodeTerm(1), index = RaftLogIndex(1), data = Command())
+    log.appendAsLeader(term = RaftNodeTerm(1), index = RaftLogIndex(2), data = Command())
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 1, log, RaftLogIndex(2), timeNow, electionTime, heartbeatTime
+    )
+    check sm.commitIndex == RaftLogIndex(2)
+
+  test "checkInvariants validates commit index bounds":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 1, term: RaftNodeTerm(1), config: config))
+    log.appendAsLeader(term = RaftNodeTerm(1), index = RaftLogIndex(2), data = Command())
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 1, log, RaftLogIndex(1), timeNow, electionTime, heartbeatTime
+    )
+    sm.checkInvariants()
+    sm.commitIndex = RaftLogIndex(0)
+    expect AssertionError:
+      sm.checkInvariants()
+    sm.commitIndex = RaftLogIndex(3)
+    expect AssertionError:
+      sm.checkInvariants()  
 
 suite "Entry log tests":
   test "append entry as leadeer":
@@ -451,7 +486,64 @@ suite "Snapshot application":
     let output = sm.poll()
     check output.logEntries.len == 0
     check sm.observedState.persistedIndex == 5
+    
+  test "applySnapshot clamps persisted index to log size":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    for i in 1 .. 2:
+      log.appendAsLeader(0, RaftLogIndex(i))
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime,
+    )
+    sm.observedState.setPersistedIndex 5
+    let success =
+      sm.applySnapshot(RaftSnapshot(index: 2, term: 0, config: config), false)
+    check success
+    discard sm.poll()
+    check sm.log.lastIndex == 2
+    check sm.observedState.persistedIndex == sm.log.lastIndex
 
+suite "Persisted index after append entries":
+  test "append entries clamps persisted index after truncation":
+    var config = createConfigFromIds(test_ids_1)
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    for i in 1 .. 5:
+      log.appendAsLeader(0, RaftLogIndex(i))
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime,
+    )
+    discard sm.poll()
+    check sm.observedState.persistedIndex == 5
+    let appendRequest = RaftRpcAppendRequest(
+      previousTerm: 0,
+      previousLogIndex: 2,
+      commitIndex: 2,
+      entries: @[
+        LogEntry(term: 1, index: 3, kind: RaftLogEntryType.rletEmpty),
+      ],
+    )
+    let msg = RaftRpcMessage(
+      currentTerm: 0,
+      sender: test_second_ids_1[0],
+      receiver: test_ids_1[0],
+      kind: RaftRpcMessageType.AppendRequest,
+      appendRequest: appendRequest,
+    )
+    sm.advance(msg, timeNow)
+    discard sm.poll()
+    check sm.log.lastIndex == 3
+    check sm.observedState.persistedIndex == sm.log.lastIndex
 
 suite "3 node cluster":
   var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())

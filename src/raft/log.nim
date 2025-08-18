@@ -28,7 +28,7 @@ type
 
   RaftLog* = object
     logEntries: seq[LogEntry]
-    firstIndex: RaftLogIndex
+    firstIndex*: RaftLogIndex
     lastConfigIndex*: RaftLogIndex
     prevConfigIndex*: RaftLogIndex
     snapshot*: RaftSnapshot
@@ -78,6 +78,24 @@ func getRelativeIndex*(rf: RaftLog, index: RaftLogIndex): Option[int] =
 func hasIndex*(rf: RaftLog, index: RaftLogIndex): bool =
   rf.getRelativeIndex(index).isSome
 
+func checkInvariant*(rf: RaftLog) =
+  var expected = rf.firstIndex
+  var lastCfg: RaftLogIndex = 0
+  var prevCfg: RaftLogIndex = 0
+  for entry in rf.logEntries:
+    doAssert entry.index == expected,
+      fmt"non-sequential log index: got {entry.index}, expected {expected}"
+    expected += 1
+    if entry.kind == rletConfig:
+      prevCfg = lastCfg
+      lastCfg = entry.index
+
+  doAssert lastCfg == rf.lastConfigIndex,
+    fmt"lastConfigIndex mismatch: got {rf.lastConfigIndex}, expected {lastCfg}"
+  doAssert prevCfg == rf.prevConfigIndex,
+    fmt"prevConfigIndex mismatch: got {rf.prevConfigIndex}, expected {prevCfg}"
+
+
 func truncateUncommitted*(rf: var RaftLog, index: RaftLogIndex) =
   let relIndexOpt = rf.getRelativeIndex(index)
   if relIndexOpt.isNone or rf.logEntries.len == 0:
@@ -101,11 +119,13 @@ func append(rf: var RaftLog, entry: LogEntry) =
   if entry.kind == rletConfig:
     rf.prevConfigIndex = rf.lastConfigIndex
     rf.lastConfigIndex = entry.index
+  rf.checkInvariant()
 
 func appendAsLeader*(rf: var RaftLog, entry: LogEntry) =
   doAssert entry.index == rf.nextIndex,
     fmt"invalid log index: got {entry.index}, expected {rf.nextIndex}"
   rf.append(entry)
+  rf.checkInvariant()
 
 func appendAsFollower*(rf: var RaftLog, entry: LogEntry) =
   if entry.index < rf.firstIndex:
