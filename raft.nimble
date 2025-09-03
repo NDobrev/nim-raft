@@ -19,7 +19,7 @@ installExt = @["nim"]
 skipDirs = @["tests"]
 bin = @["raft"]
 
-requires "nim >= 2.2.4"
+requires "nim >= 2.0.16"
 requires "stew >= 0.1.0"
 requires "unittest2 >= 0.0.4"
 requires "uuids >= 0.1.11"
