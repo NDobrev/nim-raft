@@ -12,6 +12,7 @@ import ../src/raft/consensus_state_machine
 import ../src/raft/log
 import ../src/raft/tracker
 import ../src/raft/state
+import ../src/raft/poll_state
 import std/sets
 import std/[sets, times, sequtils, random, algorithm, strformat, sugar]
 import stew/byteutils
@@ -49,21 +50,21 @@ type
 
 var test_ids_3 =
   @[
-    RaftnodeId(id: "a8409b39-f17b-4682-aaef-a19cc9f356fb"),
-    RaftnodeId(id: "2a98fc33-6559-44c0-b130-fc3e9df80a69"),
-    RaftnodeId(id: "9156756d-697f-4ffa-9b82-0c86720344bd"),
+    newRaftNodeId( "a8409b39-f17b-4682-aaef-a19cc9f356fb"),
+    newRaftNodeId( "2a98fc33-6559-44c0-b130-fc3e9df80a69"),
+    newRaftNodeId( "9156756d-697f-4ffa-9b82-0c86720344bd"),
   ]
 
 var test_second_ids_3 =
   @[
-    RaftnodeId(id: "aaaaaaaa-f17b-4682-aaef-a19cc9f356fb"),
-    RaftnodeId(id: "bbbbbbbb-6559-44c0-b130-fc3e9df80a69"),
-    RaftnodeId(id: "cccccccc-697f-4ffa-9b82-0c86720344bd"),
+    newRaftNodeId( "aaaaaaaa-f17b-4682-aaef-a19cc9f356fb"),
+    newRaftNodeId( "bbbbbbbb-6559-44c0-b130-fc3e9df80a69"),
+    newRaftNodeId( "cccccccc-697f-4ffa-9b82-0c86720344bd"),
   ]
 
-var test_ids_1 = @[RaftnodeId(id: "a8409b39-f17b-4682-aaef-a19cc9f356fb")]
+var test_ids_1 = @[newRaftNodeId( "a8409b39-f17b-4682-aaef-a19cc9f356fb")]
 
-var test_second_ids_1 = @[RaftnodeId(id: "aaaaaaaa-f17b-4682-aaef-a19cc9f356fb")]
+var test_second_ids_1 = @[newRaftNodeId( "aaaaaaaa-f17b-4682-aaef-a19cc9f356fb")]
 
 func poll(node: var TestNode): RaftStateMachineRefOutput =
   return node.sm.poll()
@@ -269,13 +270,13 @@ proc submitCommand(tc: var TestCluster, cmd: Command): bool =
     return true
   return false
 
-proc hascommittedEntry(tc: var TestCluster, cmd: Command): bool =
+proc hasCommittedEntry(tc: var TestCluster, cmd: Command): bool =
   for ce in tc.committed:
     if ce.kind == RaftLogEntryType.rletCommand and ce.command == cmd:
       return true
   return false
 
-proc hascommittedEntry(tc: var TestCluster, cfg: RaftConfig): bool =
+proc hasCommittedEntry(tc: var TestCluster, cfg: RaftConfig): bool =
   for ce in tc.committed:
     if ce.kind == RaftLogEntryType.rletConfig and ce.config == cfg:
       return true
@@ -339,72 +340,542 @@ proc measureExecutionTime(procToMeasure: ProcType) =
 
   echo "Execution Time: ".red, executionTime, " seconds"
 
-proc consensusstatemachineMain*() =
-  var config = createConfigFromIds(test_ids_1)
-  suite "Basic state machine tests":
-    test "create state machine":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var cluster = createCluster(test_ids_1, timeNow)
+var config = createConfigFromIds(test_ids_1)
+suite "Basic state machine tests":
+  test "create state machine":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_ids_1, timeNow)
 
-    test "tick empty state machine":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+  test "tick empty state machine":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
 
-      var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
-      var randGen = initRand(42)
-      let electionTime =
-        times.initDuration(milliseconds = 100) +
-        times.initDuration(milliseconds = 100 + randGen.rand(200))
-      let heartbeatTime = times.initDuration(milliseconds = 50)
-      var sm = RaftStateMachineRef.new(
-        test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    timeNow += 5.milliseconds
+    sm.tick(timeNow)
+    
+  test "new respects provided commit index":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: RaftNodeTerm(1), config: config))
+    log.appendAsLeader(term = RaftNodeTerm(1), index = RaftLogIndex(1), data = Command())
+    log.appendAsLeader(term = RaftNodeTerm(1), index = RaftLogIndex(2), data = Command())
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 1, log, RaftLogIndex(2), timeNow, electionTime, heartbeatTime
+    )
+    check sm.commitIndex == RaftLogIndex(2)
+
+  test "checkInvariants validates commit index bounds":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 1, term: RaftNodeTerm(1), config: config))
+    log.appendAsLeader(term = RaftNodeTerm(1), index = RaftLogIndex(2), data = Command())
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 1, log, RaftLogIndex(1), timeNow, electionTime, heartbeatTime
+    )
+    sm.checkInvariants()
+    sm.commitIndex = RaftLogIndex(0)
+    expect AssertionError:
+      sm.checkInvariants()
+    sm.commitIndex = RaftLogIndex(3)
+    expect AssertionError:
+      sm.checkInvariants()  
+
+suite "Entry log tests":
+  test "append entry as leadeer":
+    var log = RaftLog.init(RaftSnapshot(index: 2, config: config))
+    check log.lastIndex == 2
+  test "append entry as leadeer":
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    log.appendAsLeader(0, 1, Command())
+    log.appendAsLeader(0, 2, Command())
+    check log.lastTerm() == 0
+    log.appendAsLeader(1, 3, Command())
+    check log.lastTerm() == 1
+  test "append entry as follower":
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    check log.nextIndex == 1
+    log.appendAsFollower(0, 1, Command())
+    check log.lastTerm() == 0
+    check log.nextIndex == 2
+    check log.lastIndex() == 1
+    check log.entriesCount == 1
+    discard log.matchTerm(1, 1)
+    log.appendAsFollower(1, 2, Command())
+    check log.lastTerm() == 1
+    check log.nextIndex == 3
+    check log.lastIndex() == 2
+    check log.entriesCount == 2
+    log.appendAsFollower(1, 3, Command())
+    check log.lastTerm() == 1
+    check log.nextIndex == 4
+    check log.lastIndex() == 3
+    check log.entriesCount == 3
+    # log should trancate old entries because the term is bigger
+    log.appendAsFollower(2, 2, Command())
+    check log.lastTerm() == 2
+    check log.nextIndex == 3
+    check log.lastIndex() == 2
+    check log.entriesCount == 2
+    # log should be trancated because 
+    log.appendAsFollower(2, 1, Command())
+    check log.lastTerm() == 2
+    check log.nextIndex == 2
+    check log.lastIndex() == 1
+    check log.entriesCount == 1
+
+
+suite "Snapshot application":
+  test "poll handles shorter log after snapshot":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    for i in 1 .. 5:
+      log.appendAsLeader(0, RaftLogIndex(i))
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    discard sm.poll()
+    check sm.observedState.persistedIndex == 5
+
+    let success = sm.applySnapshot(RaftSnapshot(index: 2, term: 0, config: config), false)
+    check success
+    let output = sm.poll()
+    check output.logEntries.len == 0
+    check sm.observedState.persistedIndex == 5
+
+  test "poll handles shorter log after snapshot":
+    var config = createConfigFromIds(test_ids_1)
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    for i in 1 .. 5:
+      log.appendAsLeader(0, RaftLogIndex(i))
+
+    echo $log 
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    discard sm.poll()
+    check sm.observedState.persistedIndex == 5
+    let success = sm.applySnapshot(RaftSnapshot(index: 2, term: 0, config: config), false)
+    check success
+    let output = sm.poll()
+    check output.logEntries.len == 0
+    check sm.observedState.persistedIndex == 5
+    
+  test "applySnapshot clamps persisted index to log size":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    for i in 1 .. 2:
+      log.appendAsLeader(0, RaftLogIndex(i))
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime,
+    )
+    sm.observedState.setPersistedIndex 5
+    let success =
+      sm.applySnapshot(RaftSnapshot(index: 2, term: 0, config: config), false)
+    check success
+    discard sm.poll()
+    check sm.log.lastIndex == 2
+    check sm.observedState.persistedIndex == sm.log.lastIndex
+
+suite "Persisted index after append entries":
+  test "append entries clamps persisted index after truncation":
+    var config = createConfigFromIds(test_ids_1)
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
+    for i in 1 .. 5:
+      log.appendAsLeader(0, RaftLogIndex(i))
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime,
+    )
+    discard sm.poll()
+    check sm.observedState.persistedIndex == 5
+    let appendRequest = RaftRpcAppendRequest(
+      previousTerm: 0,
+      previousLogIndex: 2,
+      commitIndex: 2,
+      entries: @[
+        LogEntry(term: 1, index: 3, kind: RaftLogEntryType.rletEmpty),
+      ],
+    )
+    let msg = RaftRpcMessage(
+      currentTerm: 0,
+      sender: test_second_ids_1[0],
+      receiver: test_ids_1[0],
+      kind: RaftRpcMessageType.AppendRequest,
+      appendRequest: appendRequest,
+    )
+    sm.advance(msg, timeNow)
+    discard sm.poll()
+    check sm.log.lastIndex == 3
+    check sm.observedState.persistedIndex == sm.log.lastIndex
+
+suite "3 node cluster":
+  var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+  var cluster = createCluster(test_ids_3, timeNow)
+  var t = now()
+
+suite "Single node election tracker":
+  test "shite":
+    echo "Start"
+    let config = test_ids_1.createConfigFromIds
+    let p = config.currentSet & config.previousSet;
+    echo $p
+    var votes = RaftVotes.init(test_ids_1.createConfigFromIds)
+    echo $votes
+  test "unknown":
+    var votes = RaftVotes.init(test_ids_1.createConfigFromIds)
+    check votes.tallyVote == RaftElectionResult.Unknown
+
+  test "win election":
+    var votes = RaftVotes.init(test_ids_1.createConfigFromIds)
+    discard votes.registerVote(test_ids_1[0], true)
+
+    check votes.tallyVote == RaftElectionResult.Won
+  test "lost election":
+    var votes = RaftVotes.init(test_ids_1.createConfigFromIds)
+    discard votes.registerVote(test_ids_1[0], false)
+    echo votes.tallyVote
+    check votes.tallyVote == RaftElectionResult.Lost
+
+suite "3 nodes election tracker":
+  test "win election":
+    var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[0], true)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[1], true)
+    check votes.tallyVote == RaftElectionResult.Won
+
+  test "lose election":
+    var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[0], false)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[1], true)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[2], true)
+    check votes.tallyVote == RaftElectionResult.Won
+
+  test "lose election":
+    var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[0], false)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[1], false)
+    check votes.tallyVote == RaftElectionResult.Lost
+
+  test "lose election":
+    var votes = RaftVotes.init(test_ids_3.createConfigFromIds)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[0], true)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[1], false)
+    check votes.tallyVote == RaftElectionResult.Unknown
+    discard votes.registerVote(test_ids_3[2], false)
+    check votes.tallyVote == RaftElectionResult.Lost
+
+suite "Single node cluster":
+  var randGen = initRand(42)
+  let electionTime =
+    times.initDuration(milliseconds = 100) +
+    times.initDuration(milliseconds = 100 + randGen.rand(200))
+  let heartbeatTime = times.initDuration(milliseconds = 50)
+  test "election":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var config = createConfigFromIds(test_ids_1)
+    var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    check sm.state.isFollower
+    timeNow += 99.milliseconds
+    sm.tick(timeNow)
+    var output = sm.poll()
+    check output.logEntries.len == 0
+    check output.committed.len == 0
+    check output.messages.len == 0
+    check sm.state.isFollower
+    timeNow += 500.milliseconds
+    sm.tick(timeNow)
+    output = sm.poll()
+    check output.logEntries.len == 1
+    check output.committed.len == 0
+    check output.messages.len == 0
+    timeNow += 1.milliseconds
+    output = sm.poll()
+    check output.logEntries.len == 0
+    check output.committed.len == 1
+    check output.messages.len == 0
+    check sm.state.isLeader
+    check sm.term == 1
+
+  test "append entry":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var config = createConfigFromIds(test_ids_1)
+    var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    check sm.state.isFollower
+    timeNow += 1000.milliseconds
+    sm.tick(timeNow)
+    var output = sm.poll()
+    # When the node became a leader it will produce empty message in the log 
+    # and because we have single node in the cluster the empty message will be commited on the next tick
+    check output.logEntries.len == 1
+    check output.committed.len == 0
+    check output.messages.len == 0
+    check sm.state.isLeader
+
+    timeNow += 1.milliseconds
+    sm.tick(timeNow)
+    output = sm.poll()
+    check output.logEntries.len == 0
+    check output.committed.len == 1
+    check output.messages.len == 0
+    check sm.state.isLeader
+
+    discard sm.addEntry(Empty())
+    check sm.poll().messages.len == 0
+    timeNow += 250.milliseconds
+    sm.tick(timeNow)
+    check sm.poll().messages.len == 0
+
+suite "Two nodes cluster":
+  var randGen = initRand(42)
+  let electionTime =
+    times.initDuration(milliseconds = 100) +
+    times.initDuration(milliseconds = 100 + randGen.rand(200))
+  let heartbeatTime = times.initDuration(milliseconds = 50)
+  test "election":
+    let id1 = test_ids_3[0]
+    let id2 = test_ids_3[1]
+    var config = createConfigFromIds(@[id1, id2])
+    var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    check sm.state.isFollower
+    timeNow += 601.milliseconds
+    sm.tick(timeNow)
+    check sm.state.isCandidate
+    var output = sm.poll()
+    check output.votedFor.isSome
+    check output.votedFor.get() == id1
+
+    timeNow += 1.milliseconds
+    block:
+      let voteRaplay = RaftRpcVoteReply(currentTerm: output.term, voteGranted: true)
+      let msg = RaftRpcMessage(
+        currentTerm: output.term,
+        sender: id2,
+        receiver: id1,
+        kind: RaftRpcMessageType.VoteReply,
+        voteReply: voteRaplay,
       )
-      timeNow += 5.milliseconds
+      check sm.state.isCandidate
+      sm.advance(msg, timeNow)
+      output = sm.poll()
+      check output.stateChange == true
+      check sm.state.isLeader
+
+    timeNow += 1.milliseconds
+
+    # Older messages should be ignored
+    block:
+      let voteRaplay =
+        RaftRpcVoteReply(currentTerm: (output.term - 1), voteGranted: true)
+      let msg = RaftRpcMessage(
+        currentTerm: output.term,
+        sender: id2,
+        receiver: id1,
+        kind: RaftRpcMessageType.VoteReply,
+        voteReply: voteRaplay,
+      )
+      sm.advance(msg, timeNow)
+      output = sm.poll()
+      check output.stateChange == false
+      check sm.state.isLeader
+
+    block:
+      output = sm.poll()
+      timeNow += 100.milliseconds
       sm.tick(timeNow)
+      output = sm.poll()
+    # if the leader get a message with higher term it should become follower
+    block:
+      timeNow += 201.milliseconds
+      sm.tick(timeNow)
+      output = sm.poll()
+      let entry =
+        LogEntry(term: (output.term + 1), index: 1, kind: RaftLogEntryType.rletEmpty)
+      let appendRequest = RaftRpcAppendRequest(
+        previousTerm: (output.term + 1),
+        previousLogIndex: 100,
+        commitIndex: 99,
+        entries: @[entry],
+      )
+      let msg = RaftRpcMessage(
+        currentTerm: (output.term + 1),
+        sender: id2,
+        receiver: id1,
+        kind: RaftRpcMessageType.AppendRequest,
+        appendRequest: appendRequest,
+      )
+      sm.advance(msg, timeNow)
+      output = sm.poll()
+      #check output.stateChange == true
+      check sm.state.isFollower
+suite "3 nodes cluster":
+  var randGen = initRand(42)
+  let electionTime =
+    times.initDuration(milliseconds = 100) +
+    times.initDuration(milliseconds = 100 + randGen.rand(200))
+  let heartbeatTime = times.initDuration(milliseconds = 50)
+  test "election failed":
+    let mainNodeId = test_ids_3[0]
+    let id2 = test_ids_3[1]
+    let id3 = test_ids_3[2]
+    var config = createConfigFromIds(test_ids_3)
+    var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    check sm.state.isFollower
+    timeNow += 501.milliseconds
+    sm.tick(timeNow)
+    check sm.state.isCandidate
+    var output = sm.poll()
+    check output.votedFor.isSome
+    check output.votedFor.get() == mainNodeId
+    timeNow += 1.milliseconds
+    block:
+      let voteRaplay =
+        RaftRpcVoteReply(currentTerm: output.term, voteGranted: false)
+      let msg = RaftRpcMessage(
+        currentTerm: output.term,
+        sender: id2,
+        receiver: mainNodeId,
+        kind: RaftRpcMessageType.VoteReply,
+        voteReply: voteRaplay,
+      )
+      check sm.state.isCandidate
+      sm.advance(msg, timeNow)
+      output = sm.poll()
+      check output.stateChange == false
+      check sm.state.isCandidate
 
-  suite "Entry log tests":
-    test "append entry as leadeer":
-      var log = RaftLog.init(RaftSnapshot(index: 2, config: config))
-      check log.lastIndex == 2
-    test "append entry as leadeer":
-      var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
-      log.appendAsLeader(0, 1, Command())
-      log.appendAsLeader(0, 2, Command())
-      check log.lastTerm() == 0
-      log.appendAsLeader(1, 2, Command())
-      check log.lastTerm() == 1
-    test "append entry as follower":
-      var log = RaftLog.init(RaftSnapshot(index: 0, config: config))
-      check log.nextIndex == 1
-      log.appendAsFollower(0, 1, Command())
-      check log.lastTerm() == 0
-      check log.nextIndex == 2
-      check log.lastIndex() == 1
-      check log.entriesCount == 1
-      discard log.matchTerm(1, 1)
-      log.appendAsFollower(1, 2, Command())
-      check log.lastTerm() == 1
-      check log.nextIndex == 3
-      check log.lastIndex() == 2
-      check log.entriesCount == 2
-      log.appendAsFollower(1, 3, Command())
-      check log.lastTerm() == 1
-      check log.nextIndex == 4
-      check log.lastIndex() == 3
-      check log.entriesCount == 3
-      # log should trancate old entries because the term is bigger
-      log.appendAsFollower(2, 2, Command())
-      check log.lastTerm() == 2
-      check log.nextIndex == 3
-      check log.lastIndex() == 2
-      check log.entriesCount == 2
-      # log should be trancated because 
-      log.appendAsFollower(2, 1, Command())
-      check log.lastTerm() == 2
-      check log.nextIndex == 2
-      check log.lastIndex() == 1
-      check log.entriesCount == 1
+    timeNow += 1.milliseconds
+    block:
+      let voteRaplay =
+        RaftRpcVoteReply(currentTerm: output.term, voteGranted: false)
+      let msg = RaftRpcMessage(
+        currentTerm: output.term,
+        sender: id3,
+        receiver: mainNodeId,
+        kind: RaftRpcMessageType.VoteReply,
+        voteReply: voteRaplay,
+      )
+      check sm.state.isCandidate
+      sm.advance(msg, timeNow)
+      output = sm.poll()
+      #check output.stateChange == true
+      check sm.state.isFollower
 
-  suite "3 node cluster":
+    timeNow += 1.milliseconds
+
+  test "election":
+    let mainNodeId = test_ids_3[0]
+    let id2 = test_ids_3[1]
+    let id3 = test_ids_3[2]
+    var config = createConfigFromIds(test_ids_3)
+    var log = RaftLog.init(RaftSnapshot(index: 1, config: config))
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], 0, log, 0, timeNow, electionTime, heartbeatTime
+    )
+    check sm.state.isFollower
+    timeNow += 501.milliseconds
+    sm.tick(timeNow)
+    check sm.state.isCandidate
+    var output = sm.poll()
+    check output.votedFor.isSome
+    check output.votedFor.get() == mainNodeId
+    timeNow += 1.milliseconds
+    block:
+      let voteRaplay =
+        RaftRpcVoteReply(currentTerm: output.term, voteGranted: false)
+      let msg = RaftRpcMessage(
+        currentTerm: output.term,
+        sender: id2,
+        receiver: mainNodeId,
+        kind: RaftRpcMessageType.VoteReply,
+        voteReply: voteRaplay,
+      )
+      check sm.state.isCandidate
+      sm.advance(msg, timeNow)
+      output = sm.poll()
+      check output.stateChange == false
+      check sm.state.isCandidate
+
+    timeNow += 1.milliseconds
+    block:
+      let voteRaplay = RaftRpcVoteReply(currentTerm: output.term, voteGranted: true)
+      let msg = RaftRpcMessage(
+        currentTerm: output.term,
+        sender: id3,
+        receiver: mainNodeId,
+        kind: RaftRpcMessageType.VoteReply,
+        voteReply: voteRaplay,
+      )
+      check sm.state.isCandidate
+      sm.advance(msg, timeNow)
+      output = sm.poll()
+      check output.stateChange == true
+      check sm.state.isLeader
+
+    timeNow += 1.milliseconds
+
+suite "3 nodes cluster":
+  test "election":
     var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
     var cluster = createCluster(test_ids_3, timeNow)
     var t = now()
@@ -731,7 +1202,7 @@ proc consensusstatemachineMain*() =
         timeNow += 5.milliseconds
         cluster.advance(timeNow)
         var maybeLeader = cluster.getLeader()
-        if leader == RaftnodeId():
+        if leader == RaftNodeId.empty:
           if maybeLeader.isSome:
             leader = maybeLeader.get().myId
             hasLeader = true
@@ -743,80 +1214,80 @@ proc consensusstatemachineMain*() =
       # we should elect atleast 1 leader
       check hasLeader
 
-    test "1 node is not responding":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var cluster = createCluster(test_ids_3, timeNow)
-      cluster.blockMsgRouting(test_ids_3[0])
-      var leader: RaftnodeId
-      var hasLeader = false
-      for i in 0 ..< 105:
-        timeNow += 5.milliseconds
-        cluster.advance(timeNow)
-        var maybeLeader = cluster.getLeader()
-        if leader == RaftnodeId():
-          if maybeLeader.isSome:
-            leader = maybeLeader.get().myId
-            hasLeader = true
+  test "1 node is not responding":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_ids_3, timeNow)
+    cluster.blockMsgRouting(test_ids_3[0])
+    var leader: RaftnodeId
+    var hasLeader = false
+    for i in 0 ..< 105:
+      timeNow += 5.milliseconds
+      cluster.advance(timeNow)
+      var maybeLeader = cluster.getLeader()
+      if leader == RaftNodeId.empty:
+        if maybeLeader.isSome:
+          leader = maybeLeader.get().myId
+          hasLeader = true
+      else:
+        if maybeLeader.isSome:
+          check leader == maybeLeader.get().myId
         else:
-          if maybeLeader.isSome:
-            check leader == maybeLeader.get().myId
-          else:
-            check false
-      # we should elect atleast 1 leader
-      check hasLeader
+          check false
+    # we should elect atleast 1 leader
+    check hasLeader
 
-    test "2 nodes is not responding":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var cluster = createCluster(test_ids_3, timeNow)
-      cluster.blockMsgRouting(test_ids_3[0])
-      cluster.blockMsgRouting(test_ids_3[1])
-      var leader: RaftnodeId
-      for i in 0 ..< 105:
-        timeNow += 5.milliseconds
-        cluster.advance(timeNow)
-        var maybeLeader = cluster.getLeader()
-        # We should never elect a leader
-        check leader == RaftnodeId()
+  test "2 nodes is not responding":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_ids_3, timeNow)
+    cluster.blockMsgRouting(test_ids_3[0])
+    cluster.blockMsgRouting(test_ids_3[1])
+    var leader: RaftnodeId
+    for i in 0 ..< 105:
+      timeNow += 5.milliseconds
+      cluster.advance(timeNow)
+      var maybeLeader = cluster.getLeader()
+      # We should never elect a leader
+      check leader == RaftNodeId.empty
 
-    test "1 nodes is not responding new leader reelection":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var cluster = createCluster(test_ids_3, timeNow)
-      var leader: RaftnodeId
-      var firstLeaderId = RaftnodeId()
-      var secondLeaderId = RaftnodeId()
-      for i in 0 ..< 305:
-        timeNow += 5.milliseconds
-        cluster.advance(timeNow)
-        var maybeLeader = cluster.getLeader()
-        if maybeLeader.isSome() and firstLeaderId == RaftNodeId():
-          # we will block the comunication and will try to elect new leader
-          firstLeaderId = maybeLeader.get().myId
-          cluster.blockMsgRouting(firstLeaderId)
-          echo "Block comunication with: " & $firstLeaderId
-        if firstLeaderId != RaftnodeId() and maybeLeader.isSome() and
-            maybeLeader.get().myId != firstLeaderId:
-          secondLeaderId = maybeLeader.get().myId
-      check secondLeaderId != RaftnodeId() and firstLeaderId != secondLeaderId
+  test "1 nodes is not responding new leader reelection":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_ids_3, timeNow)
+    var leader: RaftnodeId
+    var firstLeaderId = RaftNodeId.empty
+    var secondLeaderId = RaftNodeId.empty
+    for i in 0 ..< 305:
+      timeNow += 5.milliseconds
+      cluster.advance(timeNow)
+      var maybeLeader = cluster.getLeader()
+      if maybeLeader.isSome() and firstLeaderId == RaftNodeId.empty:
+        # we will block the comunication and will try to elect new leader
+        firstLeaderId = maybeLeader.get().myId
+        cluster.blockMsgRouting(firstLeaderId)
+        echo "Block comunication with: " & $firstLeaderId
+      if firstLeaderId != RaftNodeId.empty and maybeLeader.isSome() and
+          maybeLeader.get().myId != firstLeaderId:
+        secondLeaderId = maybeLeader.get().myId
+    check secondLeaderId != RaftNodeId.empty and firstLeaderId != secondLeaderId
 
-    test "After reaelection leader should become follower":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var cluster = createCluster(test_ids_3, timeNow)
-      var leader: RaftnodeId
-      var firstLeaderId = RaftnodeId()
-      var secondLeaderId = RaftnodeId()
-      for i in 0 ..< 305:
-        timeNow += 5.milliseconds
-        cluster.advance(timeNow)
-        var maybeLeader = cluster.getLeader()
-        if maybeLeader.isSome() and firstLeaderId == RaftNodeId():
-          # we will block the comunication and will try to elect new leader
-          firstLeaderId = maybeLeader.get().myId
-          cluster.blockMsgRouting(firstLeaderId)
-          echo "Block comunication with: " & $firstLeaderId
-        if firstLeaderId != RaftnodeId() and maybeLeader.isSome() and
-            maybeLeader.get().myId != firstLeaderId:
-          secondLeaderId = maybeLeader.get().myId
-          cluster.allowMsgRouting(firstLeaderId)
+  test "After reaelection leader should become follower":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_ids_3, timeNow)
+    var leader: RaftnodeId
+    var firstLeaderId = RaftNodeId.empty
+    var secondLeaderId = RaftNodeId.empty
+    for i in 0 ..< 305:
+      timeNow += 5.milliseconds
+      cluster.advance(timeNow)
+      var maybeLeader = cluster.getLeader()
+      if maybeLeader.isSome() and firstLeaderId == RaftNodeId.empty:
+        # we will block the comunication and will try to elect new leader
+        firstLeaderId = maybeLeader.get().myId
+        cluster.blockMsgRouting(firstLeaderId)
+        echo "Block comunication with: " & $firstLeaderId
+      if firstLeaderId != RaftNodeId.empty and maybeLeader.isSome() and
+          maybeLeader.get().myId != firstLeaderId:
+        secondLeaderId = maybeLeader.get().myId
+        cluster.allowMsgRouting(firstLeaderId)
 
     test "leader steps down when ticks are blocked":
       var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
@@ -841,7 +1312,6 @@ proc consensusstatemachineMain*() =
       check cluster.nodes[leaderId].sm.state.isFollower
 
     test "leader stays leader when elapsed equals timeout":
-      echo "leader stays leader when elapsed equals timeout"
       var now = dateTime(2017, mMar, 1, 0, 0, 0, 0, utc())
       let electionTimeout = times.initDuration(milliseconds = 100)
       let heartbeatTime = times.initDuration(milliseconds = 50)
@@ -856,219 +1326,246 @@ proc consensusstatemachineMain*() =
       discard sm.poll()
       check sm.state.isLeader
 
-      now += electionTimeout
+      now += electionTimeout + times.initDuration(milliseconds = 1)
       sm.tickLeader(now)
       discard  sm.poll()
       check sm.state.isFollower
 
+suite "config change":
+  test "1 node":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
 
-  suite "config change":
-    test "1 node":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_second_ids_1, timeNow)
+    timeNow = cluster.establishLeader(timeNow)
 
-      var cluster = createCluster(test_second_ids_1, timeNow)
-      timeNow = cluster.establishLeader(timeNow)
+    var config = createConfigFromIds(test_ids_1)
+    cluster.submitNewConfig(config)
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    cluster.addNodeToCluster(test_ids_1[0], timeNow, currentConfig.get())
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    cluster.removeNodeFromCluster(test_second_ids_1[0])
 
-      var config = createConfigFromIds(test_ids_1)
-      cluster.submitNewConfig(config)
-      var currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      var cfg = currentConfig.get()
-      cluster.addNodeToCluster(test_ids_1[0], timeNow, currentConfig.get())
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
-      cluster.removeNodeFromCluster(test_second_ids_1[0])
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
+    currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    cfg = currentConfig.get()
 
-      currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      cfg = currentConfig.get()
+    check currentConfig.get().currentSet == test_ids_1
+    check currentConfig.get().previousSet.len == 0
 
-      var l = cluster.getLeader()
-      check l.isSome()
-      check l.get().myId == test_ids_1[0]
+    var l = cluster.getLeader()
+    check l.isSome()
+    check l.get().myId == test_ids_1[0]
 
-    test "3 nodes":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+  test "3 nodes":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
 
-      var cluster = createCluster(test_second_ids_3, timeNow)
-      timeNow = cluster.establishLeader(timeNow)
+    var cluster = createCluster(test_second_ids_3, timeNow)
+    timeNow = cluster.establishLeader(timeNow)
 
-      check cluster.submitCommand("abc".toCommand)
-      var newConfig = createConfigFromIds(test_ids_3)
-      cluster.submitNewConfig(newConfig)
-      var currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      var cfg = currentConfig.get()
-      cluster.addNodeToCluster(test_ids_3, timeNow, cfg)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
-      cluster.removeNodeFromCluster(test_second_ids_3)
-      timeNow = cluster.establishLeader(timeNow)
-      check cluster.submitCommand("bcd".toCommand)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
-      currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      cfg = currentConfig.get()
+    check not cluster.hascommittedEntry("abc".toCommand)
+    check not cluster.hascommittedEntry("bcd".toCommand)
 
-      check cluster.hascommittedEntry("abc".toCommand)
-      check cluster.hascommittedEntry("bcd".toCommand)
+    var newConfig = createConfigFromIds(test_ids_3)
+    cluster.submitNewConfig(newConfig)
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    cluster.addNodeToCluster(test_ids_3, timeNow, cfg)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 125.milliseconds)
+    cluster.removeNodeFromCluster(test_second_ids_3)
+    timeNow = cluster.establishLeader(timeNow)
+    check cluster.submitCommand("abc".toCommand)
+    
+    check cluster.submitCommand("bcd".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+    currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    cfg = currentConfig.get()
 
-    test "add node":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    check cluster.hasCommittedEntry("abc".toCommand)
+    check cluster.hasCommittedEntry("bcd".toCommand)
 
-      var cluster = createCluster(test_second_ids_1, timeNow)
-      timeNow = cluster.establishLeader(timeNow)
-      var newSet = test_second_ids_1 & test_ids_1
-      var newConfig = createConfigFromIds(newSet)
-      cluster.submitNewConfig(newConfig)
-      var currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      var cfg = currentConfig.get()
-      check cfg.previousSet == test_second_ids_1
-      check cfg.currentSet == test_second_ids_1 & test_ids_1
-      cluster.addNodeToCluster(test_ids_1, timeNow, cfg)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+  test "add node":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
 
-      currentConfig = cluster.configuration()
-      check currentConfig.isSome
+    var newSet = test_second_ids_1 & test_ids_1
+    var cluster = createCluster(newSet, timeNow)
+    timeNow = cluster.establishLeader(timeNow)
+    var newConfig = createConfigFromIds(test_second_ids_1)
+    cluster.submitNewConfig(newConfig)
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    check cfg.currentSet == test_second_ids_1
+    check cfg.previousSet == test_second_ids_1 & test_ids_1
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+    cluster.removeNodeFromCluster(test_ids_1)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+    check cluster.submitCommand("abc".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+    check cluster.hascommittedEntry("abc".toCommand)
 
-    test "remove node":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+  test "add entrie during config chage":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_second_ids_1, timeNow)
+    timeNow = cluster.establishLeader(timeNow)
+    var newConfig = createConfigFromIds(test_second_ids_1 & test_ids_1)
+    cluster.submitNewConfig(newConfig)
+    check cluster.submitCommand("abc".toCommand)
+    check cluster.submitCommand("fgh".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    # The second node is not added
+    check not cluster.hascommittedEntry("abc".toCommand)
+    check not cluster.hascommittedEntry("fgh".toCommand)
 
-      var newSet = test_second_ids_1 & test_ids_1
-      var cluster = createCluster(newSet, timeNow)
-      timeNow = cluster.establishLeader(timeNow)
-      var newConfig = createConfigFromIds(test_second_ids_1)
-      cluster.submitNewConfig(newConfig)
-      var currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      var cfg = currentConfig.get()
-      check cfg.currentSet == test_second_ids_1
-      check cfg.previousSet == test_second_ids_1 & test_ids_1
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
-      cluster.removeNodeFromCluster(test_ids_1)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
-      check cluster.submitCommand("abc".toCommand)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
-      check cluster.hascommittedEntry("abc".toCommand)
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    cluster.addNodeToCluster(test_ids_1, timeNow, cfg)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    check cluster.hascommittedEntry("abc".toCommand)
+    check cluster.hascommittedEntry("fgh".toCommand)
+  test "remove node":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
 
-    test "add entrie during config chage":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
-      var cluster = createCluster(test_second_ids_1, timeNow)
-      timeNow = cluster.establishLeader(timeNow)
-      var newConfig = createConfigFromIds(test_second_ids_1 & test_ids_1)
-      cluster.submitNewConfig(newConfig)
-      check cluster.submitCommand("abc".toCommand)
-      check cluster.submitCommand("fgh".toCommand)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      # The second node is not added
-      check not cluster.hascommittedEntry("abc".toCommand)
-      check not cluster.hascommittedEntry("fgh".toCommand)
+    var newSet = test_second_ids_1 & test_ids_1
+    var cluster = createCluster(newSet, timeNow)
+    timeNow = cluster.establishLeader(timeNow)
+    var newConfig = createConfigFromIds(test_second_ids_1)
+    cluster.submitNewConfig(newConfig)
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    check cfg.currentSet == test_second_ids_1
+    check cfg.previousSet == test_second_ids_1 & test_ids_1
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+    cluster.removeNodeFromCluster(test_ids_1)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+    check cluster.submitCommand("abc".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+    check cluster.hasCommittedEntry("abc".toCommand)
 
-      var currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      var cfg = currentConfig.get()
-      cluster.addNodeToCluster(test_ids_1, timeNow, cfg)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      check cluster.hascommittedEntry("abc".toCommand)
-      check cluster.hascommittedEntry("fgh".toCommand)
+  test "add entrie during config chage":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var cluster = createCluster(test_second_ids_1, timeNow)
+    timeNow = cluster.establishLeader(timeNow)
+    var newConfig = createConfigFromIds(test_second_ids_1 & test_ids_1)
+    cluster.submitNewConfig(newConfig)
+    check cluster.submitCommand("abc".toCommand)
+    check cluster.submitCommand("fgh".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    # The second node is not added
+    check not cluster.hasCommittedEntry("abc".toCommand)
+    check not cluster.hasCommittedEntry("fgh".toCommand)
 
-      newConfig = createConfigFromIds(test_ids_1)
-      cluster.submitNewConfig(newConfig)
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    cluster.addNodeToCluster(test_ids_1, timeNow, cfg)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    check cluster.hasCommittedEntry("abc".toCommand)
+    check cluster.hasCommittedEntry("fgh".toCommand)
 
-      check cluster.submitCommand("phg".toCommand)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      check cluster.hascommittedEntry("phg".toCommand)
+    newConfig = createConfigFromIds(test_ids_1)
+    cluster.submitNewConfig(newConfig)
 
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      cfg = currentConfig.get()
-      cluster.removeNodeFromCluster(test_second_ids_1)
-      # The cluster don't have leader yet
-      check not cluster.getLeader().isSome
-      check not cluster.submitCommand("xyz".toCommand)
+    check cluster.submitCommand("phg".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    check cluster.hasCommittedEntry("phg".toCommand)
 
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    cfg = currentConfig.get()
+    cluster.removeNodeFromCluster(test_second_ids_1)
+    # The cluster don't have leader yet
+    check not cluster.getLeader().isSome
+    check not cluster.submitCommand("xyz".toCommand)
 
-      check cluster.submitCommand("xyz".toCommand)
-      check cluster.getLeader().isSome
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
-      check cluster.hascommittedEntry("phg".toCommand)
-      check cluster.hascommittedEntry("abc".toCommand)
-      check cluster.hascommittedEntry("fgh".toCommand)
-      check cluster.hascommittedEntry("xyz".toCommand)
 
-    test "Leader stop responding config change":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
 
-      var cluster = createCluster(test_second_ids_3, timeNow)
-      timeNow = cluster.establishLeader(timeNow)
-      check cluster.submitCommand("abc".toCommand)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
-      check cluster.hascommittedEntry("abc".toCommand)
+    check cluster.submitCommand("xyz".toCommand)
+    check cluster.getLeader().isSome
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 250.milliseconds)
+    check cluster.hasCommittedEntry("phg".toCommand)
+    check cluster.hasCommittedEntry("abc".toCommand)
+    check cluster.hasCommittedEntry("fgh".toCommand)
+    check cluster.hasCommittedEntry("xyz".toCommand)
 
-      var newConfig = createConfigFromIds(test_ids_1)
-      cluster.submitNewConfig(newConfig)
-      check cluster.getLeader.isSome()
-      cluster.removeNodeFromCluster(cluster.getLeader.get.myId)
-      timeNow = cluster.advanceUntilNoLeader(timeNow)
-      check not cluster.getLeader.isSome()
-      # Cluster refuse to accept the message
-      timeNow = cluster.establishLeader(timeNow)
 
-      # Resubmit config
-      cluster.submitNewConfig(newConfig)
-      # Wait to replicate the new config
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
+  test "Leader stop responding config change":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
 
-      var currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      var cfg = currentConfig.get()
-      cluster.addNodeToCluster(test_ids_1, timeNow, cfg)
+    var cluster = createCluster(test_second_ids_3, timeNow)
+    timeNow = cluster.establishLeader(timeNow)
+    check cluster.submitCommand("abc".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
+    check cluster.hasCommittedEntry("abc".toCommand)
 
-      check cluster.submitCommand("phg".toCommand)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
-      check cluster.hascommittedEntry("phg".toCommand)
-      timeNow = cluster.establishLeader(timeNow)
+    var newConfig = createConfigFromIds(test_ids_1)
+    cluster.submitNewConfig(newConfig)
+    check cluster.getLeader.isSome()
+    cluster.removeNodeFromCluster(cluster.getLeader.get.myId)
+    timeNow = cluster.advanceUntilNoLeader(timeNow)
+    check not cluster.getLeader.isSome()
+    # Cluster refuse to accept the message
+    timeNow = cluster.establishLeader(timeNow)
 
-      cluster.removeNodeFromCluster(test_second_ids_3)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
+    # Resubmit config
+    cluster.submitNewConfig(newConfig)
+    # Wait to replicate the new config
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
 
-      check cluster.submitCommand("qwe".toCommand)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
-      check cluster.hascommittedEntry("qwe".toCommand)
-      check cluster.hascommittedEntry("phg".toCommand)
-      check not cluster.hascommittedEntry("xyz".toCommand)
-      check cluster.hascommittedEntry("abc".toCommand)
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    cluster.addNodeToCluster(test_ids_1, timeNow, cfg)
 
-    test "Leader stop responding during config change":
-      var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    check cluster.submitCommand("phg".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 500.milliseconds)
+    check cluster.hasCommittedEntry("phg".toCommand)
+    timeNow = cluster.establishLeader(timeNow)
 
-      var cluster = createCluster(test_second_ids_3, timeNow)
+    cluster.removeNodeFromCluster(test_second_ids_3)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
 
-      var removed = false
-      cluster.onEntryCommit = proc(nodeId: RaftnodeId, entry: LogEntry) =
-        if entry.kind == rletConfig and not removed:
-          check cluster.getLeader.isSome()
-          var currentConfig = cluster.configuration()
-          check currentConfig.isSome
-          var cfg = currentConfig.get()
-          cluster.markNodeForDelection(cluster.getLeader.get.myId)
-          removed = true
+    check cluster.submitCommand("qwe".toCommand)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 50.milliseconds)
+    check cluster.hasCommittedEntry("qwe".toCommand)
+    check cluster.hasCommittedEntry("phg".toCommand)
+    check not cluster.hasCommittedEntry("xyz".toCommand)
+    check cluster.hasCommittedEntry("abc".toCommand)
 
-      timeNow = cluster.establishLeader(timeNow)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+  test "Leader stop responding during config change":
+    var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
 
-      var newConfig = createConfigFromIds(test_ids_3)
-      cluster.submitNewConfig(newConfig)
+    var cluster = createCluster(test_second_ids_3, timeNow)
 
-      var currentConfig = cluster.configuration()
-      check currentConfig.isSome
-      var cfg = currentConfig.get()
-      cluster.addNodeToCluster(test_ids_3, timeNow, cfg)
-      timeNow = cluster.advanceUntil(timeNow, timeNow + 105.milliseconds)
-      timeNow = cluster.establishLeader(timeNow)
-      check cluster.getLeader.isSome()
+    var removed = false
+    cluster.onEntryCommit = proc(nodeId: RaftnodeId, entry: LogEntry) =
+      if entry.kind == rletConfig and not removed:
+        check cluster.getLeader.isSome()
+        var currentConfig = cluster.configuration()
+        check currentConfig.isSome
+        var cfg = currentConfig.get()
+        cluster.markNodeForDelection(cluster.getLeader.get.myId)
+        removed = true
 
-if isMainModule:
-  consensusstatemachineMain()
+    timeNow = cluster.establishLeader(timeNow)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 25.milliseconds)
+
+    var newConfig = createConfigFromIds(test_ids_3)
+    cluster.submitNewConfig(newConfig)
+
+    var currentConfig = cluster.configuration()
+    check currentConfig.isSome
+    var cfg = currentConfig.get()
+    cluster.addNodeToCluster(test_ids_3, timeNow, cfg)
+    timeNow = cluster.advanceUntil(timeNow, timeNow + 105.milliseconds)
+    timeNow = cluster.establishLeader(timeNow)
+    check cluster.getLeader.isSome()
+
