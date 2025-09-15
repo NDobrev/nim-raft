@@ -158,7 +158,7 @@ func checkInvariants*(sm: RaftStateMachineRef) =
   doAssert sm.commitIndex <= sm.log.lastIndex,
     fmt"commit index {sm.commitIndex} beyond log {sm.log.lastIndex}"
 
-const loglevel {.intdefine.}: int = int(DebugLogLevel.Error)
+const loglevel {.intdefine.}: int = int(DebugLogLevel.Debug)
 
 template addDebugLogEntry(
     smArg: RaftStateMachineRef, levelArg: DebugLogLevel, messageArg: string

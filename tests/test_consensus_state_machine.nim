@@ -457,11 +457,31 @@ suite "Snapshot application":
     discard sm.poll()
     check sm.observedState.persistedIndex == 5
 
-    let success = sm.applySnapshot(RaftSnapshot(index: 2, term: 0, config: config), false)
-    check success
-    let output = sm.poll()
-    check output.logEntries.len == 0
-    check sm.observedState.persistedIndex == 5
+    block:
+      let success = sm.applySnapshot(RaftSnapshot(index: 2, term: 0, config: config), false)
+      check success
+      check sm.log.lastIndex == 5
+      check sm.log.entriesCount() == 3
+      let output = sm.poll()
+      check output.logEntries.len == 0
+      check sm.observedState.persistedIndex == 5
+    block:
+      try:
+        let success = sm.applySnapshot(RaftSnapshot(index: 6, term: 0, config: config), true)
+        doAssert false, "should have failed"
+      except AssertionError:
+        check true
+    block:
+      let success = sm.applySnapshot(RaftSnapshot(index: 5, term: 0, config: config), false)
+      check success
+      check sm.log.lastIndex == 5
+      check sm.log.entriesCount() == 0
+    block:
+      let success = sm.applySnapshot(RaftSnapshot(index: 6, term: 0, config: config), false)
+      check success
+      check sm.log.lastIndex == 6
+      check sm.log.entriesCount() == 0
+
 
   test "poll handles shorter log after snapshot":
     var config = createConfigFromIds(test_ids_1)
