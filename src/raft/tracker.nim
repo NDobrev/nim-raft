@@ -33,7 +33,7 @@ type
     # Index of the highest log entry known to be replicated to this server.
     matchIndex*: RaftLogIndex
     commitIndex*: RaftLogIndex
-    replayedIndex: RaftLogIndex
+    replayedIndex*: RaftLogIndex
     lastMessageAt*: times.DateTime
 
   MatchSeqRef = ref object

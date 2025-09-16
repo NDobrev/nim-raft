@@ -135,6 +135,24 @@ proc addNodeToCluster(
     let nodeSeed = rng.rand(1000)
     tc.addNodeToCluster(id, now, config, initRand(nodeSeed))
 
+proc initLeaderWithSnapshot(): (RaftStateMachineRef, RaftNodeId, RaftNodeId, RaftSnapshot) =
+  var ids = @[test_ids_3[0], test_ids_3[1]]
+  var config = createConfigFromIds(ids)
+  let snapshot =
+    RaftSnapshot(index: RaftLogIndex(5), term: RaftNodeTerm(1), config: config)
+  var log = RaftLog.init(snapshot)
+  for i in 6 .. 8:
+    log.appendAsLeader(RaftNodeTerm(1), RaftLogIndex(i))
+  var now = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+  let electionTime = times.initDuration(milliseconds = 250)
+  let heartbeatTime = times.initDuration(milliseconds = 50)
+  var sm =
+    RaftStateMachineRef.new(ids[0], RaftNodeTerm(1), log, snapshot.index, now,
+      electionTime, heartbeatTime)
+  sm.becomeLeader()
+  discard sm.poll()
+  (sm, ids[0], ids[1], snapshot)
+
 proc markNodeForDelection(tc: var TestCluster, id: RaftnodeId) =
   tc.nodes[id].markedForElection = true
 
@@ -478,10 +496,11 @@ suite "Snapshot application":
       check sm.log.entriesCount() == 0
     block:
       let success = sm.applySnapshot(RaftSnapshot(index: 6, term: 0, config: config), false)
-      check success
+      let repeatSuccess =
+        sm.applySnapshot(RaftSnapshot(index: 6, term: 0, config: config), false)
+      check repeatSuccess
       check sm.log.lastIndex == 6
       check sm.log.entriesCount() == 0
-
 
   test "poll handles shorter log after snapshot":
     var config = createConfigFromIds(test_ids_1)
@@ -528,6 +547,131 @@ suite "Snapshot application":
     check sm.log.lastIndex == 2
     check sm.observedState.persistedIndex == sm.log.lastIndex
 
+suite "InstallSnapshot RPC":
+  test "follower replies success when snapshot already applied":
+    var config = createConfigFromIds(test_ids_1)
+    let snapshot =
+      RaftSnapshot(index: RaftLogIndex(5), term: RaftNodeTerm(3), config: config)
+    var log = RaftLog.init(snapshot)
+    var now = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      test_ids_1[0], snapshot.term, log, snapshot.index, now,
+      electionTime, heartbeatTime
+    )
+    sm.becomeFollower(test_second_ids_1[0])
+    discard sm.poll()
+
+    let message = RaftRpcMessage(
+      currentTerm: snapshot.term,
+      sender: test_second_ids_1[0],
+      receiver: test_ids_1[0],
+      kind: RaftRpcMessageType.InstallSnapshot,
+      installSnapshot: RaftInstallSnapshot(term: snapshot.term, snapshot: snapshot),
+    )
+
+    sm.advance(message, now)
+    var output = sm.poll()
+    check output.messages.len == 1
+    check output.messages[0].kind == RaftRpcMessageType.SnapshotReply
+    check output.messages[0].snapshotReply.success
+    check sm.commitIndex == snapshot.index
+    check sm.log.lastIndex == snapshot.index
+
+    sm.advance(message, now)
+    output = sm.poll()
+    check output.messages.len == 1
+    check output.messages[0].kind == RaftRpcMessageType.SnapshotReply
+    check output.messages[0].snapshotReply.success
+
+  test "snapshot replay falls back to log snapshot index":
+    var (sm, leaderId, followerId, snapshot) = initLeaderWithSnapshot()
+    doAssert sm.myId == leaderId
+
+    var follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    follower.get().nextIndex = snapshot.index
+
+    sm.replicateTo(follower.get())
+    discard sm.poll()
+
+    follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    follower.get().replayedIndex = 0
+    follower.get().nextIndex = snapshot.index
+
+    sm.installSnapshotReplay(followerId, RaftSnapshotReply(term: sm.term, success: true))
+    var output = sm.poll()
+    let appendMsgs = output.messages.filterIt(it.kind == RaftRpcMessageType.AppendRequest)
+    check appendMsgs.len >= 1
+    check appendMsgs[0].appendRequest.previousLogIndex == snapshot.index
+    check appendMsgs[0].appendRequest.entries.len > 0
+    check appendMsgs[0].appendRequest.entries[0].index == snapshot.index + 1
+
+    follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    check follower.get().nextIndex == sm.log.lastIndex + 1
+    check follower.get().matchIndex == snapshot.index
+    check follower.get().replayedIndex == 0
+
+suite "Snapshot replies":
+  test "leader advances follower after snapshot success":
+    var (sm, leaderId, followerId, snapshot) = initLeaderWithSnapshot()
+    doAssert sm.myId == leaderId
+
+    var follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    follower.get().nextIndex = snapshot.index
+
+    sm.replicateTo(follower.get())
+    var output = sm.poll()
+    let installMsgs = output.messages.filterIt(it.kind == RaftRpcMessageType.InstallSnapshot)
+    check installMsgs.len >= 1
+    check installMsgs[0].installSnapshot.snapshot.index == snapshot.index
+
+    sm.installSnapshotReplay(followerId, RaftSnapshotReply(term: sm.term, success: true))
+    output = sm.poll()
+    let appendMsgs = output.messages.filterIt(it.kind == RaftRpcMessageType.AppendRequest)
+    check appendMsgs.len >= 1
+    check appendMsgs[0].appendRequest.previousLogIndex == snapshot.index
+    check appendMsgs[0].appendRequest.entries.len > 0
+    check appendMsgs[0].appendRequest.entries[0].index == snapshot.index + 1
+
+    follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    check follower.get().nextIndex == sm.log.lastIndex + 1
+    check follower.get().matchIndex == snapshot.index
+
+  test "leader advances follower after snapshot rejection":
+    var (sm, leaderId, followerId, snapshot) = initLeaderWithSnapshot()
+    doAssert sm.myId == leaderId
+
+    var follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    follower.get().nextIndex = snapshot.index
+
+    sm.replicateTo(follower.get())
+    var output = sm.poll()
+    let installMsgs = output.messages.filterIt(it.kind == RaftRpcMessageType.InstallSnapshot)
+    check installMsgs.len >= 1
+
+    sm.installSnapshotReplay(followerId, RaftSnapshotReply(term: sm.term, success: false))
+    output = sm.poll()
+    let appendMsgs = output.messages.filterIt(it.kind == RaftRpcMessageType.AppendRequest)
+    check appendMsgs.len >= 1
+    check appendMsgs[0].appendRequest.previousLogIndex == snapshot.index
+    check appendMsgs[0].appendRequest.entries.len > 0
+    check appendMsgs[0].appendRequest.entries[0].index == snapshot.index + 1
+
+    follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    check follower.get().nextIndex == sm.log.lastIndex + 1
+    check follower.get().matchIndex == snapshot.index
+    
 suite "Persisted index after append entries":
   test "append entries clamps persisted index after truncation":
     var config = createConfigFromIds(test_ids_1)

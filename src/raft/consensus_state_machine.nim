@@ -263,7 +263,7 @@ func currentLeader(sm: RaftStateMachineRef): RaftNodeId =
     return sm.state.follower.leader
   RaftNodeId.empty
 
-func findFollowerProgressById(
+func findFollowerProgressById*(
     sm: RaftStateMachineRef, id: RaftNodeId
 ): Option[RaftFollowerProgressTrackerRef] =
   sm.leader.tracker.find(id)
@@ -344,8 +344,10 @@ func applySnapshot*(sm: RaftStateMachineRef, snapshot: RaftSnapshot, local: bool
 
   let current = sm.log.snapshot
   if snapshot.index <= current.index or (not local and snapshot.index <= sm.commitIndex):
-    sm.warning "Ignore outdated snapshot " & $snapshot & " " & $current
-    return false
+    sm.debug "Ignore outdated snapshot " & $snapshot & " " & $current
+    sm.commitIndex = max(sm.commitIndex, snapshot.index)
+    sm.checkInvariants()
+    return true
 
   sm.commitIndex = max(sm.commitIndex, snapshot.index)
   sm.output.applyedSnapshots = some(snapshot)
@@ -383,6 +385,7 @@ func replicateTo*(sm: RaftStateMachineRef, follower: RaftFollowerProgressTracker
   if not previousTerm.isSome:
     debugEcho follower.nextIndex - 1, sm.log.lastIndex, sm.log.firstIndex, sm.log.entriesCount
     let snapshot = sm.log.snapshot
+    follower.replayedIndex = snapshot.index
     sm.sendTo(follower.id, RaftInstallSnapshot(term: sm.term, snapshot: snapshot))
     return
   var request = RaftRpcAppendRequest(
@@ -777,15 +780,28 @@ func requestVoteReply*(
     sm.debug "Lost election"
     sm.becomeFollower(RaftNodeId.empty)
 
-func installSnapshotReplay(
+func installSnapshotReplay*(
     sm: RaftStateMachineRef, fromId: RaftNodeId, replay: RaftSnapshotReply
 ) =
   let follower = sm.findFollowerProgressById(fromId)
   if not follower.isSome:
     return
 
-  if replay.success:
-    sm.replicateTo(follower.get())
+  let followerRef = follower.get()
+  var snapshotIndex = followerRef.replayedIndex
+  if snapshotIndex == 0:
+    snapshotIndex = sm.log.snapshot.index
+  let nextIndex = snapshotIndex + 1
+  followerRef.nextIndex = max(followerRef.nextIndex, nextIndex)
+  followerRef.matchIndex = max(followerRef.matchIndex, snapshotIndex)
+  followerRef.commitIndex = max(followerRef.commitIndex, sm.commitIndex)
+  followerRef.replayedIndex = 0
+
+  if not replay.success:
+    sm.debug "Snapshot reply rejected for follower " & $fromId & " index " &
+      $snapshotIndex
+
+  sm.replicateTo(followerRef)
 
 func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime) =
   sm.debug "Advance with" & $msg
