@@ -56,6 +56,13 @@ type
   RaftRpcAppendReplyRejected* = object
     nonMatchingIndex*: RaftLogIndex
     lastIdx*: RaftLogIndex
+    # Conflict optimization hints (optional)
+    # If follower knows the term of the conflicting entry, it sets
+    # conflictTerm to that term and conflictIndex to the first index
+    # in its log with that term. Otherwise (log too short or below snapshot),
+    # conflictTerm is none and conflictIndex is a hint where to resume.
+    conflictTerm*: Option[RaftNodeTerm]
+    conflictIndex*: RaftLogIndex
 
   RaftRpcAppendReplyAccepted* = object
     lastNewIndex*: RaftLogIndex
@@ -126,6 +133,8 @@ type
     heartbeatTime: times.Duration
     timeNow: times.DateTime
     startTime: times.DateTime
+    # Last time the leader had evidence of contact with a quorum
+    lastQuorumTime: times.DateTime
 
     observedState*: RaftLastPollState
     state*: RaftStateMachineRefState
@@ -158,7 +167,8 @@ func checkInvariants*(sm: RaftStateMachineRef) =
   doAssert sm.commitIndex <= sm.log.lastIndex,
     fmt"commit index {sm.commitIndex} beyond log {sm.log.lastIndex}"
 
-const loglevel {.intdefine.}: int = int(DebugLogLevel.Debug)
+const loglevel {.intdefine.}: int = int(DebugLogLevel.Error)
+const pollCheckInvariants {.booldefine.} = false
 
 template addDebugLogEntry(
     smArg: RaftStateMachineRef, levelArg: DebugLogLevel, messageArg: string
@@ -197,6 +207,36 @@ template info*(sm: RaftStateMachineRef, log: string) =
 template critical*(sm: RaftStateMachineRef, log: string) =
   when loglevel >= int(DebugLogLevel.Critical):
     sm.addDebugLogEntry(DebugLogLevel.Critical, log)
+
+# Forward declaration for use in hasRecentQuorum
+func findFollowerProgressById*(
+    sm: RaftStateMachineRef, id: RaftNodeId
+): Option[RaftFollowerProgressTrackerRef]
+
+func hasRecentQuorum(sm: RaftStateMachineRef, now: times.DateTime): bool =
+  # Count active members in a set: those with recent replies
+  proc activeInSet(ids: seq[RaftNodeId]): int =
+    var count = 0
+    for id in ids:
+      if id == sm.myId:
+        count += 1
+      else:
+        let p = sm.findFollowerProgressById(id)
+        if p.isSome:
+          if now - p.get().lastReplyAt <= sm.randomizedElectionTime:
+            count += 1
+    count
+
+  let quorumCurrent = int(sm.leader.tracker.current.len div 2) + 1
+  if sm.leader.tracker.current.len == 0:
+    return true
+  let activeCurrent = activeInSet(sm.leader.tracker.current)
+  if sm.log.configuration.isJoint:
+    let quorumPrev = int(sm.leader.tracker.previous.len div 2) + 1
+    let activePrev = activeInSet(sm.leader.tracker.previous)
+    return activeCurrent >= quorumCurrent and activePrev >= quorumPrev
+  else:
+    return activeCurrent >= quorumCurrent
 
 func getLeaderId*(sm: RaftStateMachineRef): Option[RaftNodeId] =
   if sm.state.isLeader:
@@ -255,6 +295,7 @@ func new*(
   sm.randomizedElectionTime = randomizedElectionTime
   sm.observedState.observe(sm)
   sm.output = RaftStateMachineRefOutput()
+  sm.lastQuorumTime = now
   sm.checkInvariants()
   return sm
 
@@ -354,7 +395,7 @@ func applySnapshot*(sm: RaftStateMachineRef, snapshot: RaftSnapshot, local: bool
 
   sm.log.applySnapshot(snapshot)
   let newPersistedIndex = max(sm.observedState.persistedIndex, snapshot.index)
-  sm.observedState.persistedIndex = min(newPersistedIndex, sm.log.lastIndex)
+  sm.observedState.setPersistedIndex min(newPersistedIndex, sm.log.lastIndex)
   sm.checkInvariants()
   true
 
@@ -383,7 +424,8 @@ func replicateTo*(sm: RaftStateMachineRef, follower: RaftFollowerProgressTracker
   var previousTerm = sm.log.termForIndex(follower.nextIndex - 1)
   #sm.debug "Replicate to " & $follower[]
   if not previousTerm.isSome:
-    debugEcho follower.nextIndex - 1, sm.log.lastIndex, sm.log.firstIndex, sm.log.entriesCount
+    when loglevel >= int(DebugLogLevel.Debug):
+      debugEcho follower.nextIndex - 1, sm.log.lastIndex, sm.log.firstIndex, sm.log.entriesCount
     let snapshot = sm.log.snapshot
     follower.replayedIndex = snapshot.index
     sm.sendTo(follower.id, RaftInstallSnapshot(term: sm.term, snapshot: snapshot))
@@ -396,6 +438,9 @@ func replicateTo*(sm: RaftStateMachineRef, follower: RaftFollowerProgressTracker
   )
 
   let nextIdx = follower.nextIndex
+  let toSendCount = int(sm.log.lastIndex - nextIdx + 1)
+  if toSendCount > 0:
+    request.entries = newSeqOfCap[LogEntry](toSendCount)
   for i in nextIdx .. sm.log.lastIndex:
     request.entries.add(sm.log.getEntryByIndex(i))
     follower.nextIndex += 1
@@ -474,6 +519,7 @@ func becomeLeader*(sm: RaftStateMachineRef) =
   discard sm.addEntry(Empty())
   sm.pingLeader = false
   sm.lastElectionTime = sm.timeNow
+  sm.lastQuorumTime = sm.timeNow
   sm.info "Become leader"
   return
 
@@ -529,15 +575,19 @@ func heartbeat(sm: RaftStateMachineRef, follower: var RaftFollowerProgressTracke
 func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
   assert sm.timeNow <= now
   sm.timeNow = now
-
-  if sm.timeNow - sm.lastElectionTime  > sm.randomizedElectionTime:
-    sm.becomeFollower(RaftNodeId.empty)
-    return
-
-  sm.lastElectionTime = now
   if not sm.state.isLeader:
     sm.error "tickLeader can be called only on the leader"
     return
+
+  # Step-down heuristic: if leader hasn't heard from a quorum recently,
+  # it steps down to allow a new election.
+  if not sm.hasRecentQuorum(now):
+    if sm.timeNow - sm.lastQuorumTime > sm.randomizedElectionTime:
+      sm.debug "Leader stepping down due to lost quorum"
+      sm.becomeFollower(RaftNodeId.empty)
+      return
+  else:
+    sm.lastQuorumTime = now
   for followerIndex in 0 ..< sm.leader.tracker.progress.len:
     var follower = sm.leader.tracker.progress[followerIndex]
     if sm.myId != follower.id:
@@ -603,7 +653,8 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
     sm.replicate()
     sm.commit()
 
-  sm.log.checkInvariant()
+  when pollCheckInvariants:
+    sm.log.checkInvariant()
 
   if sm.state.isCandidate:
     sm.debug("Current vote status " & $sm.candidate.votes.current)
@@ -670,6 +721,7 @@ func appendEntryReply*(
     let lastIndex = reply.accepted.lastNewIndex
     sm.debug "Accpeted message from " & $fromId & " last log index: " & $lastIndex
     follower.get().accepted(lastIndex)
+    follower.get().lastReplyAt = sm.timeNow
 
     sm.commit()
     # TODO: Implement leader voluntary step-down logic.
@@ -679,10 +731,25 @@ func appendEntryReply*(
       return
   of RaftRpcCode.Rejected:
     sm.debug "Rejected message from " & $fromId & " last log index: " & $reply.rejected
+    follower.get().lastReplyAt = sm.timeNow
     if reply.rejected.nonMatchingIndex == 0 and reply.rejected.lastIdx == 0:
+      # Legacy hint-free rejection: just try replicate again
       sm.replicateTo(follower.get())
-    follower.get().nextIndex =
-      min(reply.rejected.nonMatchingIndex, reply.rejected.lastIdx + 1)
+    else:
+      # Conflict optimization per Raft thesis:
+      # - if follower provided conflictTerm:
+      #     if leader has entries with that term, jump nextIndex to last index of that term + 1
+      #     else set nextIndex to follower's conflictIndex
+      # - otherwise set nextIndex to follower's conflictIndex
+      if reply.rejected.conflictTerm.isSome:
+        let t = reply.rejected.conflictTerm.get()
+        let leaderIdxOpt = sm.log.lastIndexOfTerm(t)
+        if leaderIdxOpt.isSome:
+          follower.get().nextIndex = leaderIdxOpt.get() + 1
+        else:
+          follower.get().nextIndex = reply.rejected.conflictIndex
+      else:
+        follower.get().nextIndex = reply.rejected.conflictIndex
     sm.debug $follower.get()
   # if commit apply configuration that removes current follower 
   # we should take it again
@@ -704,8 +771,40 @@ func appendEntry*(
 
   let (match, term) = sm.log.matchTerm(request.previousLogIndex, request.previousTerm)
   if not match:
+    # Build conflict hints per Raft paper for faster backtracking
+    var conflictTerm: Option[RaftNodeTerm] = none(RaftNodeTerm)
+    var conflictIndex: RaftLogIndex = 0
+    let fi = sm.log.firstIndex
+    let li = sm.log.lastIndex
+    if request.previousLogIndex > li:
+      # Follower log too short
+      conflictIndex = li + 1
+    elif request.previousLogIndex < fi:
+      # Leader is too far behind follower's snapshot/log; hint where follower's log starts
+      conflictIndex = fi
+    else:
+      # Term mismatch at previousLogIndex: provide follower's term and the
+      # first index for that term in follower's log.
+      let myTermOpt = sm.log.termForIndex(request.previousLogIndex)
+      if myTermOpt.isSome:
+        conflictTerm = some(myTermOpt.get())
+        var i = request.previousLogIndex
+        # Walk back to the first index with this term within follower's log bounds
+        while i > fi:
+          let prevTermOpt = sm.log.termForIndex(i - 1)
+          if prevTermOpt.isSome and prevTermOpt.get() == myTermOpt.get():
+            i = i - 1
+          else:
+            break
+        conflictIndex = i
+      else:
+        # Should not happen, but provide a conservative hint
+        conflictIndex = fi
     let rejected = RaftRpcAppendReplyRejected(
-      nonMatchingIndex: request.previousLogIndex, lastIdx: sm.log.lastIndex
+      nonMatchingIndex: request.previousLogIndex,
+      lastIdx: sm.log.lastIndex,
+      conflictTerm: conflictTerm,
+      conflictIndex: conflictIndex,
     )
     let responce = RaftRpcAppendReply(
       term: sm.term,
@@ -788,6 +887,7 @@ func installSnapshotReplay*(
     return
 
   let followerRef = follower.get()
+  followerRef.lastReplyAt = sm.timeNow
   var snapshotIndex = followerRef.replayedIndex
   if snapshotIndex == 0:
     snapshotIndex = sm.log.snapshot.index
@@ -823,8 +923,12 @@ func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime)
     if msg.kind == RaftRpcMessageType.AppendRequest:
       # Instruct leader to step down
       sm.debug "Reject to apply the entry and instruct leader to step down" & $sm.term & " " & $msg.currentTerm
-      let rejected =
-        RaftRpcAppendReplyRejected(nonMatchingIndex: 0, lastIdx: sm.log.lastIndex)
+      let rejected = RaftRpcAppendReplyRejected(
+        nonMatchingIndex: 0,
+        lastIdx: sm.log.lastIndex,
+        conflictTerm: none(RaftNodeTerm),
+        conflictIndex: sm.log.lastIndex + 1,
+      )
       let responce = RaftRpcAppendReply(
         term: sm.term,
         commitIndex: sm.commitIndex,

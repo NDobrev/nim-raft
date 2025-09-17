@@ -35,6 +35,7 @@ type
     commitIndex*: RaftLogIndex
     replayedIndex*: RaftLogIndex
     lastMessageAt*: times.DateTime
+    lastReplyAt*: times.DateTime
 
   MatchSeqRef = ref object
     match: seq[RaftLogIndex]
@@ -133,6 +134,7 @@ func new*(
     commitIndex: 0,
     replayedIndex: 0,
     lastMessageAt: now,
+    lastReplyAt: now,
   )
 
 func new*(
@@ -140,7 +142,13 @@ func new*(
     follower: RaftNodeId,
     nextIndex: RaftLogIndex,
 ): T =
-  T(id: follower, nextIndex: nextIndex, matchIndex: 0, commitIndex: 0, replayedIndex: 0)
+  T(
+    id: follower,
+    nextIndex: nextIndex,
+    matchIndex: 0,
+    commitIndex: 0,
+    replayedIndex: 0,
+  )
 
 func find(s: var RaftFollowerProgress, what: RaftNodeId): int =
   for i, x in s:
@@ -229,6 +237,7 @@ func `$`*(progress: RaftFollowerProgressTrackerRef): string =
     commitIndex: {progress.commitIndex}
     replayedIndex: {progress.replayedIndex}
     lastMessageAt: {progress.lastMessageAt.format("YYYY:MM:dd:HH:mm:ss:fff")}
+    lastReplyAt: {progress.lastReplyAt.format("YYYY:MM:dd:HH:mm:ss:fff")}
   """
 
 func `$`*(election: RaftElectionTracker): string =

@@ -157,3 +157,30 @@ suite "RaftLog Tests":
     var log = RaftLog.init(snapshot, entries)
     expect AssertionError:
       log.checkInvariant()
+
+  test "lastIndexOfTerm finds indices and considers snapshot":
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: RaftConfig()))
+    log.appendAsLeader(term = 1, index = 1, data = Command(data: @[]))
+    log.appendAsLeader(term = 1, index = 2, data = Command(data: @[]))
+    log.appendAsLeader(term = 2, index = 3, data = Command(data: @[]))
+    log.appendAsLeader(term = 2, index = 4, data = Command(data: @[]))
+    check log.lastIndexOfTerm(2).isSome and log.lastIndexOfTerm(2).get() == 4
+    check log.lastIndexOfTerm(1).isSome and log.lastIndexOfTerm(1).get() == 2
+    check not log.lastIndexOfTerm(3).isSome
+
+    var log2 = RaftLog.init(RaftSnapshot(index: 5, term: 7, config: RaftConfig()))
+    check log2.lastIndexOfTerm(7).isSome and log2.lastIndexOfTerm(7).get() == 5
+    check not log2.lastIndexOfTerm(1).isSome
+
+  test "appendAsFollower ignores index < firstIndex and > nextIndex":
+    var log = RaftLog.init(RaftSnapshot(index: 2, term: 1, config: RaftConfig()))
+    # nextIndex is 3
+    log.appendAsFollower(LogEntry(term: 1, index: 1, kind: rletEmpty))
+    check log.lastIndex == 2 and log.entriesCount == 0
+    log.appendAsFollower(LogEntry(term: 1, index: 4, kind: rletEmpty))
+    check log.lastIndex == 2 and log.entriesCount == 0
+
+  test "matchTerm returns true for index 0":
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: RaftConfig()))
+    let (m, t) = log.matchTerm(0, 0)
+    check m and t == 0

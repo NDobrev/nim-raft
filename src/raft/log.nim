@@ -54,28 +54,28 @@ func init*(T: type RaftLog, snapshot: RaftSnapshot, entries: seq[LogEntry] = @[]
   log.updateConfigIndices()
   log
 
-func lastTerm*(rf: RaftLog): RaftNodeTerm =
+func lastTerm*(rf: RaftLog): RaftNodeTerm {.inline.} =
   if rf.logEntries.len == 0:
     return rf.snapshot.term
   rf.logEntries[^1].term
 
-func entriesCount*(rf: RaftLog): int =
+func entriesCount*(rf: RaftLog): int {.inline.} =
   rf.logEntries.len
 
-func lastIndex*(rf: RaftLog): RaftLogIndex =
+func lastIndex*(rf: RaftLog): RaftLogIndex {.inline.} =
   if rf.logEntries.len == 0:
     return rf.snapshot.index
   rf.logEntries[^1].index
 
-func nextIndex*(rf: RaftLog): RaftLogIndex =
+func nextIndex*(rf: RaftLog): RaftLogIndex {.inline.} =
   return rf.lastIndex + 1
 
-func getRelativeIndex*(rf: RaftLog, index: RaftLogIndex): Option[int] =
+func getRelativeIndex*(rf: RaftLog, index: RaftLogIndex): Option[int] {.inline.} =
   if index < rf.firstIndex or index > rf.lastIndex:
     return none(int)
   some(int(index - rf.firstIndex))
 
-func hasIndex*(rf: RaftLog, index: RaftLogIndex): bool =
+func hasIndex*(rf: RaftLog, index: RaftLogIndex): bool {.inline.} =
   rf.getRelativeIndex(index).isSome
 
 func checkInvariant*(rf: RaftLog) =
@@ -241,3 +241,15 @@ func `$`*(rf: RaftLog): string =
   result = "\nLog state:\n"
   for e in rf.logEntries:
     result.add(e.toString(commandToHex) & "\n")
+
+func lastIndexOfTerm*(rf: RaftLog, term: RaftNodeTerm): Option[RaftLogIndex] =
+  var idx = rf.lastIndex
+  while idx >= rf.firstIndex:
+    let t = rf.termForIndex(idx)
+    if t.isSome and t.get() == term:
+      return some(idx)
+    if idx == 0: break
+    idx = idx - 1
+  if rf.snapshot.index > 0 and rf.snapshot.term == term:
+    return some(rf.snapshot.index)
+  none(RaftLogIndex)

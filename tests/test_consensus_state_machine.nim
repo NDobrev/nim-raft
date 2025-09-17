@@ -618,6 +618,71 @@ suite "InstallSnapshot RPC":
     check follower.get().matchIndex == snapshot.index
     check follower.get().replayedIndex == 0
 
+suite "AppendEntries edges":
+  test "accept when prevLogIndex equals snapshot index":
+    let leader = newRaftNodeId("leader-1")
+    let follower = newRaftNodeId("follower-1")
+    let config = createConfigFromIds(@[leader, follower])
+    var flog = RaftLog.init(RaftSnapshot(index: 5, term: 1, config: config))
+    var now = dateTime(2020, mMar, 01, 00, 00, 00, 00, utc())
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var fsm = RaftStateMachineRef.new(
+      follower, 1, flog, 5, now, electionTime, heartbeatTime
+    )
+    fsm.becomeFollower(leader)
+    discard fsm.poll()
+    let req = RaftRpcAppendRequest(
+      previousTerm: 1,
+      previousLogIndex: 5,
+      commitIndex: 7,
+      entries: @[
+        LogEntry(term: 1, index: 6, kind: rletEmpty),
+        LogEntry(term: 1, index: 7, kind: rletEmpty),
+      ],
+    )
+    fsm.appendEntry(leader, req)
+    let outputAE = fsm.poll()
+    check outputAE.messages.len == 1
+    check outputAE.messages[0].kind == RaftRpcMessageType.AppendReply
+    check outputAE.messages[0].appendReply.result == RaftRpcCode.Accepted
+    check outputAE.messages[0].appendReply.accepted.lastNewIndex == 7
+    check fsm.log.lastIndex == 7
+    check fsm.commitIndex == 7
+
+suite "RequestVote edges":
+  test "follower rejects vote if candidate log is stale":
+    let followerId = newRaftNodeId("F")
+    let candidateId = newRaftNodeId("C")
+    let config = createConfigFromIds(@[followerId, candidateId])
+    var l = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: config))
+    l.appendAsLeader(2, 1)
+    var now = dateTime(2020, mMar, 01, 00, 00, 00, 00, utc())
+    var randGen = initRand(42)
+    let electionTime =
+      times.initDuration(milliseconds = 100) +
+      times.initDuration(milliseconds = 100 + randGen.rand(200))
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      followerId, 2, l, 0, now, electionTime, heartbeatTime
+    )
+    sm.becomeFollower(RaftNodeId.empty)
+    discard sm.poll()
+    let req = RaftRpcVoteRequest(
+      currentTerm: 2,
+      lastLogIndex: 0,
+      lastLogTerm: 0,
+      force: false,
+    )
+    sm.requestVote(candidateId, req)
+    let outputRV = sm.poll()
+    check outputRV.messages.len == 1
+    check outputRV.messages[0].kind == RaftRpcMessageType.VoteReply
+    check outputRV.messages[0].voteReply.voteGranted == false
+
 suite "Snapshot replies":
   test "leader advances follower after snapshot success":
     var (sm, leaderId, followerId, snapshot) = initLeaderWithSnapshot()
@@ -1493,7 +1558,8 @@ suite "3 nodes cluster":
       now += electionTimeout + times.initDuration(milliseconds = 1)
       sm.tickLeader(now)
       discard  sm.poll()
-      check sm.state.isFollower
+      # With quorum-based step-down, single-node leaders do not step down
+      check sm.state.isLeader
 
 suite "config change":
   test "1 node":
@@ -1732,4 +1798,3 @@ suite "config change":
     timeNow = cluster.advanceUntil(timeNow, timeNow + 105.milliseconds)
     timeNow = cluster.establishLeader(timeNow)
     check cluster.getLeader.isSome()
-
