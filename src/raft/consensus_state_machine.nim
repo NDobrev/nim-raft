@@ -907,6 +907,9 @@ func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime)
   if msg.receiver != sm.myId:
     sm.debug "Invalid receiver:" & $msg.receiver & $msg
     return
+
+  if now > sm.timeNow:
+    sm.timeNow = now
   if msg.currentTerm > sm.term:
     sm.debug "Current node is behind my term:" & $sm.term & " message term:" &
       $msg.currentTerm

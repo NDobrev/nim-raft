@@ -81,3 +81,46 @@ suite "Leader step-down":
     sm.tick(now)
     discard sm.poll()
     check sm.state.isLeader
+
+  test "leader keeps leadership when replies arrive via advance":
+    let id1 = newRaftNodeId("n1")
+    let id2 = newRaftNodeId("n2")
+    let id3 = newRaftNodeId("n3")
+    let config = cfg(@[id1, id2, id3])
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: config))
+    let start = dateTime(2020, mJan, 01, 00, 00, 00, 00, utc())
+    let electionTime = initDuration(milliseconds = 100)
+    let heartbeatTime = initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(id1, 0, log, 0, start, electionTime, heartbeatTime)
+    sm.becomeLeader()
+    discard sm.poll()
+    check sm.state.isLeader
+
+    # Leader sends heartbeats and advances its logical clock
+    var now = start + 20.milliseconds
+    sm.tick(now)
+    discard sm.poll()
+
+    # Follower replies at a later timestamp; deliver via advance()
+    now = start + 60.milliseconds
+    let reply = RaftRpcAppendReply(
+      term: sm.term,
+      commitIndex: sm.commitIndex,
+      result: RaftRpcCode.Accepted,
+      accepted: RaftRpcAppendReplyAccepted(lastNewIndex: sm.log.lastIndex),
+    )
+    let msg = RaftRpcMessage(
+      currentTerm: sm.term,
+      sender: id2,
+      receiver: id1,
+      kind: RaftRpcMessageType.AppendReply,
+      appendReply: reply,
+    )
+    sm.advance(msg, now)
+    discard sm.poll()
+
+    # Advance beyond election timeout; leader should remain in charge
+    now = start + 130.milliseconds
+    sm.tick(now)
+    discard sm.poll()
+    check sm.state.isLeader
