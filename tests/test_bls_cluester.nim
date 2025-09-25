@@ -10,11 +10,10 @@ import std/json
 import std/jsonutils
 import std/options
 import std/strutils
-import stew/endians2
-import stew/byteutils
 import std/algorithm
 import std/strformat
 
+import stew/[byteutils, endians2]
 import blscurve
 import tables
 
@@ -377,11 +376,28 @@ suite "BLS consensus tests":
           entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty)],
         ),
       )
-      check msg.toBinary().toHex ==
-        "00000000000003e72869643a202234353622292869643a20223132332229020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
+      let encoded = msg.toBinary()
+      let decoded = RaftRpcMessage.fromBinary(encoded)
+      check decoded.currentTerm == msg.currentTerm
+      check decoded.kind == msg.kind
+      check decoded.sender.id == msg.sender.id
+      check decoded.receiver.id == msg.receiver.id
+      check decoded.appendRequest.previousTerm == msg.appendRequest.previousTerm
+      check decoded.appendRequest.previousLogIndex == msg.appendRequest.previousLogIndex
+      check decoded.appendRequest.commitIndex == msg.appendRequest.commitIndex
+      check decoded.appendRequest.entries.len == msg.appendRequest.entries.len
+      for i, entry in decoded.appendRequest.entries:
+        let original = msg.appendRequest.entries[i]
+        check entry.term == original.term
+        check entry.index == original.index
+        check entry.kind == original.kind
     block:
       let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
-      check msg.toBinary().toHex == "0000000000000001000000000000000102"
+      let encoded = msg.toBinary()
+      let decoded = LogEntry.fromBinary(encoded)
+      check decoded.term == msg.term
+      check decoded.index == msg.index
+      check decoded.kind == msg.kind
   test "create 3 node cluster":
     var timeNow = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
     var delayer = initDelayer(3, 0, 1, initRand(42))
@@ -408,8 +424,8 @@ suite "BLS consensus tests":
     block:
       let msg = RaftRpcMessage(
         currentTerm: 999,
-        receiver: newRaftNodeId( "123"),
-        sender: newRaftNodeId( "456"),
+        receiver: newRaftNodeId("123"),
+        sender: newRaftNodeId("456"),
         kind: RaftRpcMessageType.AppendRequest,
         appendRequest: RaftRpcAppendRequest(
           previousTerm: 1,
@@ -418,8 +434,25 @@ suite "BLS consensus tests":
           entries: @[LogEntry(term: 1, index: 1, kind: rletEmpty)],
         ),
       )
-      check msg.toBinary().toHex ==
-        "00000000000003e72869643a202234353622292869643a20223132332229020000000000000001000000000000000000000000000000000000000000000001000000000000000102"
+      let encoded = msg.toBinary()
+      let decoded = RaftRpcMessage.fromBinary(encoded)
+      check decoded.currentTerm == msg.currentTerm
+      check decoded.kind == msg.kind
+      check decoded.sender.id == msg.sender.id
+      check decoded.receiver.id == msg.receiver.id
+      check decoded.appendRequest.previousTerm == msg.appendRequest.previousTerm
+      check decoded.appendRequest.previousLogIndex == msg.appendRequest.previousLogIndex
+      check decoded.appendRequest.commitIndex == msg.appendRequest.commitIndex
+      check decoded.appendRequest.entries.len == msg.appendRequest.entries.len
+      for i, entry in decoded.appendRequest.entries:
+        let original = msg.appendRequest.entries[i]
+        check entry.term == original.term
+        check entry.index == original.index
+        check entry.kind == original.kind
     block:
       let msg = LogEntry(term: 1, index: 1, kind: rletEmpty)
-      check msg.toBinary().toHex == "0000000000000001000000000000000102"
+      let encoded = msg.toBinary()
+      let decoded = LogEntry.fromBinary(encoded)
+      check decoded.term == msg.term
+      check decoded.index == msg.index
+      check decoded.kind == msg.kind

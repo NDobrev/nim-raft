@@ -14,7 +14,7 @@ import ../src/raft/tracker
 import ../src/raft/state
 import ../src/raft/poll_state
 import std/sets
-import std/[sets, times, sequtils, random, algorithm, strformat, sugar]
+import std/[sets, times, sequtils, random, algorithm, strformat, sugar, options]
 import stew/byteutils
 
 import tables

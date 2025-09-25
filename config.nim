@@ -26,9 +26,6 @@ if defined(windows):
     # set the IMAGE_FILE_LARGE_ADDRESS_AWARE flag so we can use PAE, if enabled, and access more than 2 GiB of RAM
     switch("passL", "-Wl,--large-address-aware")
 
-  # The dynamic Chronicles output currently prevents us from using colors on Windows
-  # because these require direct manipulations of the stdout File object.
-  switch("define", "chronicles_colors=off")
 
 # https://github.com/status-im/nimbus-eth2/blob/stable/docs/cpu_features.md#ssse3-supplemental-sse3
 # suggests that SHA256 hashing with SSSE3 is 20% faster than without SSSE3, so
@@ -103,7 +100,3 @@ switch("warning", "LockLevel:off")
 # Discovery configuration
 switch("define", "discv5_protocol_id=d5waku")
 
-# Logging configuration
---define:chronicles_line_numbers
-switch("define", "chronicles_log_level=DEBUG")
-switch("define", "chronicles_runtime_filtering=on")

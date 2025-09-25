@@ -14,8 +14,7 @@ import state
 import config
 import poll_state
 
-import std/[times]
-import std/strformat
+import std/[times, options, strformat]
 
 type
   RaftRpcMessageType* = enum

@@ -6,7 +6,7 @@ import ../src/raft/types
 import ../src/raft/consensus_state_machine
 import ../src/raft/log
 import ../src/raft/state
-import std/times
+import std/[times, options]
 
 proc cfg(ids: seq[RaftNodeId]): RaftConfig =
   RaftConfig(currentSet: ids)

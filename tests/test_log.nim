@@ -2,6 +2,7 @@ import unittest
 
 import ../src/raft/log
 import ../src/raft
+import std/options
 
 suite "RaftLog Tests":
   test "RaftLog.init with non-empty entries should initialize RaftLog correctly":

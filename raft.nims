@@ -18,4 +18,7 @@ task build, "Build static lib":
   buildLibrary "raft", "src/"
 
 task test, "Run tests":
-  exec "nim c -r tests/all_tests.nim"
+  exec "nimble -y c -r tests/all_tests.nim"
+
+task compare_ssz, "Compare SSZ implementations":
+  exec "nimble -y c -r tools/compare_encoding.nim"

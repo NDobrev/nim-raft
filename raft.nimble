@@ -20,10 +20,11 @@ skipDirs = @["tests"]
 bin = @["raft"]
 
 requires "nim >= 2.0.16"
-requires "stew >= 0.1.0"
+requires "testutils >= 0.1.0"
 requires "unittest2 >= 0.0.4"
-requires "uuids >= 0.1.11"
-requires "chronicles >= 0.10.3"
-requires "chronos >= 3.0.11"
+requires "stew >= 0.4.0"
 requires "blscurve >= 0.0.1"
-requires "binary_serialization >= 0.0.1"
+requires "chronos >= 4.0.0"
+requires "ssz_serialization >= 0.1.0"
+
+include "raft.nims"

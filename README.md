@@ -15,6 +15,10 @@ https://github.com/scylladb/scylladb/tree/master/raft
 The main goal is to separate implementation of the raft state machine from the other implementation details such as storage, network communication, etc.
 In order to achieve this, we want to keep the state machine absolutely deterministic. Aspects such as networking, logging, acquiring current time, random number generation, disc operation, etc are delegated to the hosting application through the state machine interface. This ensures better testability and easier integration in arbitrary host application architectures.
 
+### Wire format
+
+All Raft RPCs and log entries are serialised with [SimpleSerialize (SSZ)](https://ethereum.github.io/consensus-specs/ssz/simple-serialize/)
+
 ## BLS-Raft
 
 Besides the base Raft algorithm, this repository implements an extension of Raft that effectively authenticates all Raft messages with BLS signatures of the participants. Through the use of [BLS threshold signing](https://notes.status.im/BLS-Threshold-Signing#), this augments the act of reaching consensus with the creation of a corresponding group BLS signature in cluster configuration such as 2 out of 3, 3 out of 5, etc.

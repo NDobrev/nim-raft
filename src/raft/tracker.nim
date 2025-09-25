@@ -1,8 +1,6 @@
 import types
 import config
-import std/[times]
-import std/algorithm
-import std/strformat
+import std/[times, algorithm, strformat, options]
 
 type
   RaftElectionResult* = enum
