@@ -414,6 +414,267 @@ suite "Basic state machine tests":
     expect AssertionError:
       sm.checkInvariants()  
 
+suite "Leader commit gating":
+  test "leader defers old-term entry until current-term quorum":
+    let id1 = newRaftNodeId("n1")
+    let id2 = newRaftNodeId("n2")
+    let id3 = newRaftNodeId("n3")
+    let config = createConfigFromIds(@[id1, id2, id3])
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: config))
+    log.appendAsLeader(
+      term = RaftNodeTerm(1),
+      index = RaftLogIndex(1),
+      data = Command(),
+    )
+
+    var now = dateTime(2020, mJan, 01, 00, 00, 00, 00, utc())
+    let electionTime = initDuration(milliseconds = 150)
+    let heartbeatTime = initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      id1, RaftNodeTerm(2), log, RaftLogIndex(0), now, electionTime, heartbeatTime,
+    )
+
+    sm.becomeLeader()
+    discard sm.poll()
+
+    var leaderProgress = sm.findFollowerProgressById(id1)
+    check leaderProgress.isSome()
+    leaderProgress.get().matchIndex = sm.log.lastIndex
+    leaderProgress.get().nextIndex = sm.log.lastIndex + 1
+
+    for followerId in [id2, id3]:
+      var follower = sm.findFollowerProgressById(followerId)
+      check follower.isSome()
+      follower.get().matchIndex = RaftLogIndex(1)
+      follower.get().nextIndex = RaftLogIndex(2)
+
+    var output = sm.poll()
+    check sm.commitIndex == RaftLogIndex(0)
+    check output.committed.len == 0
+
+    var followerAdv = sm.findFollowerProgressById(id2)
+    check followerAdv.isSome()
+    followerAdv.get().matchIndex = sm.log.lastIndex
+    followerAdv.get().nextIndex = sm.log.lastIndex + 1
+
+    output = sm.poll()
+    check sm.commitIndex == sm.log.lastIndex
+    check output.committed.len == 2
+    check output.committed[1].term == sm.term
+
+suite "RequestVote follower behavior":
+  test "follower grants vote once and resets timer":
+    let followerId = newRaftNodeId("follower")
+    let candidateA = newRaftNodeId("candidate-a")
+    let candidateB = newRaftNodeId("candidate-b")
+    let cfg = createConfigFromIds(@[followerId, candidateA, candidateB])
+    var flog = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: cfg))
+    flog.appendAsLeader(
+      term = RaftNodeTerm(3),
+      index = RaftLogIndex(1),
+      data = Command(),
+    )
+
+    var now = dateTime(2020, mJan, 01, 00, 00, 00, 00, utc())
+    let electionTime = initDuration(milliseconds = 200)
+    let heartbeatTime = initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      followerId, RaftNodeTerm(3), flog, RaftLogIndex(0), now, electionTime, heartbeatTime,
+    )
+    sm.becomeFollower(RaftNodeId.empty)
+    discard sm.poll()
+
+    now = now + (electionTime - initDuration(milliseconds = 10))
+    sm.tick(now)
+    discard sm.poll()
+    check sm.state.isFollower
+
+    let voteReq = RaftRpcVoteRequest(
+      currentTerm: sm.term,
+      lastLogIndex: sm.log.lastIndex,
+      lastLogTerm: sm.log.lastTerm,
+      force: false,
+    )
+    now = now + initDuration(milliseconds = 5)
+    sm.tick(now)
+    discard sm.poll()
+
+    sm.requestVote(candidateA, voteReq)
+    var output = sm.poll()
+    check output.messages.len == 1
+    check output.messages[0].kind == RaftRpcMessageType.VoteReply
+    check output.messages[0].voteReply.voteGranted
+    check output.votedFor.isSome
+    check output.votedFor.get() == candidateA
+
+    sm.requestVote(candidateB, voteReq)
+    output = sm.poll()
+    check output.messages.len == 1
+    check output.messages[0].kind == RaftRpcMessageType.VoteReply
+    check not output.messages[0].voteReply.voteGranted
+
+    var later = now + (electionTime - initDuration(milliseconds = 10))
+    sm.tick(later)
+    discard sm.poll()
+    check sm.state.isFollower
+
+    later = later + initDuration(milliseconds = 20)
+    sm.tick(later)
+    discard sm.poll()
+    check sm.state.isCandidate
+
+suite "Append rejection":
+  test "follower rejects lower-term append request":
+    let leaderId = newRaftNodeId("leader")
+    let followerId = newRaftNodeId("follower")
+    let cfg = createConfigFromIds(@[leaderId, followerId])
+    var flog = RaftLog.init(RaftSnapshot(index: 0, term: 1, config: cfg))
+    flog.appendAsLeader(
+      term = RaftNodeTerm(1),
+      index = RaftLogIndex(1),
+      data = Command(),
+    )
+    flog.appendAsLeader(
+      term = RaftNodeTerm(2),
+      index = RaftLogIndex(2),
+      data = Command(),
+    )
+
+    var now = dateTime(2020, mApr, 01, 00, 00, 00, 00, utc())
+    let electionTime = initDuration(milliseconds = 200)
+    let heartbeatTime = initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      followerId, RaftNodeTerm(2), flog, RaftLogIndex(0), now, electionTime, heartbeatTime,
+    )
+    sm.becomeFollower(leaderId)
+    discard sm.poll()
+
+    let request = RaftRpcAppendRequest(
+      previousTerm: RaftNodeTerm(1),
+      previousLogIndex: RaftLogIndex(1),
+      commitIndex: RaftLogIndex(1),
+      entries: @[],
+    )
+
+    let msg = RaftRpcMessage(
+      currentTerm: RaftNodeTerm(1),
+      sender: leaderId,
+      receiver: followerId,
+      kind: RaftRpcMessageType.AppendRequest,
+      appendRequest: request,
+    )
+
+    sm.advance(msg, now)
+    let output = sm.poll()
+    check output.messages.len == 1
+    check output.messages[0].kind == RaftRpcMessageType.AppendReply
+    check output.messages[0].appendReply.result == RaftRpcCode.Rejected
+    let rej = output.messages[0].appendReply.rejected
+    check rej.nonMatchingIndex == RaftLogIndex(0)
+    check not rej.conflictTerm.isSome
+    check rej.conflictIndex == sm.log.lastIndex + 1
+
+suite "VoteRequest step-down":
+  test "leader steps down on higher-term vote request":
+    let leaderId = newRaftNodeId("leader")
+    let followerId = newRaftNodeId("follower")
+    let thirdId = newRaftNodeId("observer")
+    let cfg = createConfigFromIds(@[leaderId, followerId, thirdId])
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: cfg))
+    log.appendAsLeader(
+      term = RaftNodeTerm(2),
+      index = RaftLogIndex(1),
+      data = Command(),
+    )
+
+    var now = dateTime(2020, mJan, 01, 00, 00, 00, 00, utc())
+    let electionTime = initDuration(milliseconds = 150)
+    let heartbeatTime = initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      leaderId, RaftNodeTerm(2), log, RaftLogIndex(0), now, electionTime, heartbeatTime,
+    )
+
+    sm.becomeLeader()
+    discard sm.poll()
+    check sm.state.isLeader
+
+    let higherTerm = sm.term + 1
+    let voteReq = RaftRpcVoteRequest(
+      currentTerm: higherTerm,
+      lastLogIndex: sm.log.lastIndex,
+      lastLogTerm: sm.log.lastTerm,
+      force: false,
+    )
+
+    now += 80.milliseconds
+    let msg = RaftRpcMessage(
+      currentTerm: higherTerm,
+      sender: followerId,
+      receiver: leaderId,
+      kind: RaftRpcMessageType.VoteRequest,
+      voteRequest: voteReq,
+    )
+
+    sm.advance(msg, now)
+    let output = sm.poll()
+    check sm.state.isFollower
+    check sm.term == higherTerm
+    check output.messages.len == 1
+    check output.messages[0].kind == RaftRpcMessageType.VoteReply
+    check output.messages[0].voteReply.voteGranted
+    check output.votedFor.isSome
+    check output.votedFor.get() == followerId
+
+suite "Known leader vote rejection":
+  test "follower refuses vote when leader known":
+    let leaderId = newRaftNodeId("leader")
+    let followerId = newRaftNodeId("follower")
+    let candidateId = newRaftNodeId("challenger")
+    let cfg = createConfigFromIds(@[leaderId, followerId, candidateId])
+    var flog = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: cfg))
+    flog.appendAsLeader(
+      term = RaftNodeTerm(2),
+      index = RaftLogIndex(1),
+      data = Command(),
+    )
+
+    var now = dateTime(2020, mApr, 02, 00, 00, 00, 00, utc())
+    let electionTime = initDuration(milliseconds = 200)
+    let heartbeatTime = initDuration(milliseconds = 50)
+    var sm = RaftStateMachineRef.new(
+      followerId, RaftNodeTerm(2), flog, RaftLogIndex(0), now, electionTime, heartbeatTime,
+    )
+    sm.becomeFollower(leaderId)
+    discard sm.poll()
+
+    let heartbeat = RaftRpcMessage(
+      currentTerm: sm.term,
+      sender: leaderId,
+      receiver: followerId,
+      kind: RaftRpcMessageType.AppendRequest,
+      appendRequest: RaftRpcAppendRequest(
+        previousTerm: sm.log.lastTerm,
+        previousLogIndex: sm.log.lastIndex,
+        commitIndex: sm.log.lastIndex,
+        entries: @[],
+      ),
+    )
+    sm.advance(heartbeat, now)
+    discard sm.poll()
+
+    now = now + initDuration(milliseconds = 10)
+    let voteReq = RaftRpcVoteRequest(
+      currentTerm: sm.term,
+      lastLogIndex: sm.log.lastIndex,
+      lastLogTerm: sm.log.lastTerm,
+      force: false,
+    )
+    sm.requestVote(candidateId, voteReq)
+    let output = sm.poll()
+    check output.messages.len == 1
+    check output.messages[0].kind == RaftRpcMessageType.VoteReply
+    check not output.messages[0].voteReply.voteGranted
+
 suite "Entry log tests":
   test "append entry as leadeer":
     var log = RaftLog.init(RaftSnapshot(index: 2, config: config))
