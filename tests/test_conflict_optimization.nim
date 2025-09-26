@@ -5,8 +5,6 @@ import unittest2
 import ../src/raft/types
 import ../src/raft/consensus_state_machine
 import ../src/raft/log
-import ../src/raft/state
-import ../src/raft/config
 import std/[times, options]
 
 proc createConfig(ids: seq[RaftNodeId]): RaftConfig =

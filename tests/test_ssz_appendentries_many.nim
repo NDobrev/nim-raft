@@ -122,16 +122,21 @@ suite "SSZ AppendEntries many":
       previousTerm: 1,
       previousLogIndex: 1,
       commitIndex: 1,
-      entries: @[],
+      entries: default(List[LogEntrySsz, maxAppendEntries]),
     )
     let oversizedEntry = LogEntrySsz(
       term: 1,
       index: 1,
       kind: uint8(RaftLogEntryType.rletCommand),
-      commandData: newSeqWith(maxLogEntryPayloadBytes, byte(1)),
+      commandData: init(
+        ByteList[maxLogEntryPayloadBytes],
+        newSeqWith(maxLogEntryPayloadBytes, byte(1)),
+      ),
     )
+    var entryList: seq[LogEntrySsz] = @[]
     for _ in 0..<5:
-      container.entries.add(oversizedEntry)
+      entryList.add(oversizedEntry)
+    container.entries = init(List[LogEntrySsz, maxAppendEntries], entryList)
 
     let encoded = encode(SSZ, container)
 

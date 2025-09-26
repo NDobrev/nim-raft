@@ -768,8 +768,9 @@ func appendEntry*(
     sm.debug "You can't append append request to the non follower"
     return
 
-  let (match, term) = sm.log.matchTerm(request.previousLogIndex, request.previousTerm)
-  if not match:
+  let (matchReason, term) =
+    sm.log.matchTerm(request.previousLogIndex, request.previousTerm)
+  if matchReason != mtrMatch:
     # Build conflict hints per Raft paper for faster backtracking
     var conflictTerm: Option[RaftNodeTerm] = none(RaftNodeTerm)
     var conflictIndex: RaftLogIndex = 0

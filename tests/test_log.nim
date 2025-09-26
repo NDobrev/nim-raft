@@ -181,7 +181,18 @@ suite "RaftLog Tests":
     log.appendAsFollower(LogEntry(term: 1, index: 4, kind: rletEmpty))
     check log.lastIndex == 2 and log.entriesCount == 0
 
-  test "matchTerm returns true for index 0":
+  test "matchTerm returns match for index 0":
     var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: RaftConfig()))
-    let (m, t) = log.matchTerm(0, 0)
-    check m and t == 0
+    let (reason, t) = log.matchTerm(0, 0)
+    check reason == mtrMatch and t == 0
+
+  test "matchTerm reports mismatched term":
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: RaftConfig()))
+    log.appendAsLeader(term = 1, index = 1, data = Command(data: @[]))
+    let (reason, t) = log.matchTerm(1, 2)
+    check reason == mtrTermMismatch and t == RaftNodeTerm(1)
+
+  test "matchTerm reports missing index":
+    var log = RaftLog.init(RaftSnapshot(index: 0, term: 0, config: RaftConfig()))
+    let (reason, t) = log.matchTerm(5, 0)
+    check reason == mtrIndexNotFound and t == 0

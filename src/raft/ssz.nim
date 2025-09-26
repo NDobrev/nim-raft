@@ -22,6 +22,7 @@ const
   snapshotConfigBytes* = 64 * 1024
   maxAppendEntries* = 1024
   maxAppendEntriesBytes* = 4 * 1024 * 1024
+  maxRpcPayloadBytes = maxAppendEntriesBytes + snapshotConfigBytes + 1024
   maxLogEntryPayloadBytes* = 1 shl 20
   maxNodeIdBytes = 64
 
@@ -30,13 +31,13 @@ type
     term*: uint64
     index*: uint64
     kind*: uint8
-    commandData*: seq[byte]
+    commandData*: ByteList[maxLogEntryPayloadBytes]
 
   AppendRequestSsz* = object
     previousTerm*: uint64
     previousLogIndex*: uint64
     commitIndex*: uint64
-    entries*: seq[LogEntrySsz]
+    entries*: List[LogEntrySsz, maxAppendEntries]
 
   AppendReplyRejectedSsz = object
     nonMatchingIndex: uint64
@@ -54,15 +55,15 @@ type
 
   RaftRpcMessageEnvelope = object
     currentTerm: uint64
-    sender: seq[byte]
-    receiver: seq[byte]
+    sender: ByteList[maxNodeIdBytes]
+    receiver: ByteList[maxNodeIdBytes]
     kind: uint8
-    payload: seq[byte]
+    payload: ByteList[maxRpcPayloadBytes]
 
   SnapshotSsz = object
     index: uint64
     term: uint64
-    config: seq[byte]
+    config: ByteList[snapshotConfigBytes]
 
   InstallSnapshotSsz = object
     term: uint64
@@ -92,7 +93,11 @@ proc bytesToNodeId(data: openArray[byte]): RaftNodeId {.raises: [SszError].} =
 
 proc encodeSnapshot(snapshot: RaftSnapshot): SnapshotSsz {.raises: [SszError].} =
   # Placeholder: config serialization not yet implemented
-  SnapshotSsz(index: uint64(snapshot.index), term: uint64(snapshot.term), config: @[])
+  SnapshotSsz(
+    index: uint64(snapshot.index),
+    term: uint64(snapshot.term),
+    config: default(ByteList[snapshotConfigBytes]),
+  )
 
 proc decodeSnapshot(container: SnapshotSsz): RaftSnapshot {.raises: [SszError].} =
   RaftSnapshot(
@@ -109,7 +114,7 @@ proc toSsz*(entry: LogEntry): LogEntrySsz {.raises: [SszError].} =
   of RaftLogEntryType.rletCommand:
     if entry.command.data.len > maxLogEntryPayloadBytes:
       raise toSszError("command payload exceeds SSZ limit")
-    result.commandData = entry.command.data
+    result.commandData = init(ByteList[maxLogEntryPayloadBytes], entry.command.data)
   of RaftLogEntryType.rletEmpty:
     discard
   of RaftLogEntryType.rletConfig:
@@ -125,7 +130,7 @@ proc toLogEntry*(entry: LogEntrySsz): LogEntry {.raises: [SszError].} =
       term: RaftNodeTerm(entry.term),
       index: RaftLogIndex(entry.index),
       kind: kind,
-      command: Command(data: entry.commandData),
+      command: Command(data: entry.commandData.asSeq),
     )
   of RaftLogEntryType.rletEmpty:
     LogEntry(
@@ -231,14 +236,8 @@ proc encodeReply(value: RaftRpcVoteReply): seq[byte] {.raises: [SszError].} =
 proc encodeAppendRequest(request: RaftRpcAppendRequest): seq[byte] {.raises: [SszError].} =
   if request.entries.len > maxAppendEntries:
     raise toSszError("AppendEntries entries length exceeds limit")
-
-  var container = AppendRequestSsz(
-    previousTerm: uint64(request.previousTerm),
-    previousLogIndex: uint64(request.previousLogIndex),
-    commitIndex: uint64(request.commitIndex),
-    entries: @[],
-  )
   var payloadBytes = 0
+  var entryContainers: seq[LogEntrySsz] = @[]
   for entry in request.entries:
     case entry.kind:
       of RaftLogEntryType.rletConfig:
@@ -249,7 +248,14 @@ proc encodeAppendRequest(request: RaftRpcAppendRequest): seq[byte] {.raises: [Ss
         payloadBytes += entry.command.data.len
     if payloadBytes > maxAppendEntriesBytes:
       raise toSszError("AppendEntries payload exceeds limit")
-    container.entries.add(entry.toSsz())
+    entryContainers.add(entry.toSsz())
+
+  let container = AppendRequestSsz(
+    previousTerm: uint64(request.previousTerm),
+    previousLogIndex: uint64(request.previousLogIndex),
+    commitIndex: uint64(request.commitIndex),
+    entries: init(List[LogEntrySsz, maxAppendEntries], entryContainers),
+  )
 
   try:
     encode(SSZ, container)
@@ -307,12 +313,18 @@ proc encodeRpcMessage*(msg: RaftRpcMessage): seq[byte] {.raises: [SszError].} =
   of RaftRpcMessageType.SnapshotReply:
     payload = encodeSnapshotReply(msg.snapshotReply)
 
+  if payload.len > maxRpcPayloadBytes:
+    raise toSszError("RPC payload exceeds SSZ limit")
+
+  let senderBytes = nodeIdToBytes(msg.sender)
+  let receiverBytes = nodeIdToBytes(msg.receiver)
+
   let envelope = RaftRpcMessageEnvelope(
     currentTerm: uint64(msg.currentTerm),
-    sender: nodeIdToBytes(msg.sender),
-    receiver: nodeIdToBytes(msg.receiver),
+    sender: init(ByteList[maxNodeIdBytes], senderBytes),
+    receiver: init(ByteList[maxNodeIdBytes], receiverBytes),
     kind: uint8(msg.kind),
-    payload: payload,
+    payload: init(ByteList[maxRpcPayloadBytes], payload),
   )
 
   try:
@@ -366,7 +378,7 @@ proc decodeAppendRequest(bytes: openArray[byte]): RaftRpcAppendRequest {.raises:
 
   var entries: seq[LogEntry] = @[]
   var payloadBytes = 0
-  for entry in container.entries:
+  for entry in container.entries.asSeq:
     payloadBytes += entry.commandData.len
     if payloadBytes > maxAppendEntriesBytes:
       raise toSszError("decoded AppendEntries payload exceeds limit")
@@ -462,8 +474,8 @@ proc decodeRpcMessage*(bytes: openArray[byte]): RaftRpcMessage {.raises: [SszErr
     except ValueError:
       raise toSszError("invalid RaftRpcMessage kind")
 
-  let sender = bytesToNodeId(envelope.sender)
-  let receiver = bytesToNodeId(envelope.receiver)
+  let sender = bytesToNodeId(envelope.sender.asSeq)
+  let receiver = bytesToNodeId(envelope.receiver.asSeq)
 
   case kind
   of RaftRpcMessageType.VoteRequest:
@@ -472,7 +484,7 @@ proc decodeRpcMessage*(bytes: openArray[byte]): RaftRpcMessage {.raises: [SszErr
       sender: sender,
       receiver: receiver,
       kind: kind,
-      voteRequest: decodeRequest(envelope.payload),
+      voteRequest: decodeRequest(envelope.payload.asSeq),
     )
   of RaftRpcMessageType.VoteReply:
     RaftRpcMessage(
@@ -480,7 +492,7 @@ proc decodeRpcMessage*(bytes: openArray[byte]): RaftRpcMessage {.raises: [SszErr
       sender: sender,
       receiver: receiver,
       kind: kind,
-      voteReply: decodeReply(envelope.payload),
+      voteReply: decodeReply(envelope.payload.asSeq),
     )
   of RaftRpcMessageType.AppendRequest:
     RaftRpcMessage(
@@ -488,7 +500,7 @@ proc decodeRpcMessage*(bytes: openArray[byte]): RaftRpcMessage {.raises: [SszErr
       sender: sender,
       receiver: receiver,
       kind: kind,
-      appendRequest: decodeAppendRequest(envelope.payload),
+      appendRequest: decodeAppendRequest(envelope.payload.asSeq),
     )
   of RaftRpcMessageType.AppendReply:
     RaftRpcMessage(
@@ -496,7 +508,7 @@ proc decodeRpcMessage*(bytes: openArray[byte]): RaftRpcMessage {.raises: [SszErr
       sender: sender,
       receiver: receiver,
       kind: kind,
-      appendReply: decodeAppendReply(envelope.payload),
+      appendReply: decodeAppendReply(envelope.payload.asSeq),
     )
   of RaftRpcMessageType.InstallSnapshot:
     RaftRpcMessage(
@@ -504,7 +516,7 @@ proc decodeRpcMessage*(bytes: openArray[byte]): RaftRpcMessage {.raises: [SszErr
       sender: sender,
       receiver: receiver,
       kind: kind,
-      installSnapshot: decodeInstallSnapshot(envelope.payload),
+      installSnapshot: decodeInstallSnapshot(envelope.payload.asSeq),
     )
   of RaftRpcMessageType.SnapshotReply:
     RaftRpcMessage(
@@ -512,7 +524,7 @@ proc decodeRpcMessage*(bytes: openArray[byte]): RaftRpcMessage {.raises: [SszErr
       sender: sender,
       receiver: receiver,
       kind: kind,
-      snapshotReply: decodeSnapshotReply(envelope.payload),
+      snapshotReply: decodeSnapshotReply(envelope.payload.asSeq),
     )
 
 proc toSsz*(request: RaftRpcVoteRequest): seq[byte] {.raises: [SszError].} =

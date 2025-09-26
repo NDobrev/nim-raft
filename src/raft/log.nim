@@ -8,6 +8,11 @@ type
     rletConfig = 1
     rletEmpty = 2
 
+  MatchTermReason* = enum
+    mtrMatch
+    mtrTermMismatch
+    mtrIndexNotFound
+
   Command* = object
     data*: seq[byte]
 
@@ -159,18 +164,22 @@ func appendAsFollower*(
 
 func matchTerm*(
     rf: RaftLog, index: RaftLogIndex, term: RaftNodeTerm
-): (bool, RaftNodeTerm) =
+): (MatchTermReason, RaftNodeTerm) =
   if index == 0:
-    return (true, 0)
+    return (mtrMatch, 0)
   if index == rf.snapshot.index:
     let myTerm = rf.snapshot.term
-    return (myTerm == term, myTerm)
+    if myTerm == term:
+      return (mtrMatch, myTerm)
+    return (mtrTermMismatch, myTerm)
   let relIndexOpt = rf.getRelativeIndex(index)
   if relIndexOpt.isSome:
     let relIndex = relIndexOpt.get()
     let myTerm = rf.logEntries[relIndex].term
-    return (myTerm == term, myTerm)
-  (false, 0)
+    if myTerm == term:
+      return (mtrMatch, myTerm)
+    return (mtrTermMismatch, myTerm)
+  (mtrIndexNotFound, 0)
 
 func termForIndex*(rf: RaftLog, index: RaftLogIndex): Option[RaftNodeTerm] =
   if index == rf.snapshot.index:
