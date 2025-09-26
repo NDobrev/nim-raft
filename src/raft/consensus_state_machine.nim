@@ -166,7 +166,7 @@ func checkInvariants*(sm: RaftStateMachineRef) =
   doAssert sm.commitIndex <= sm.log.lastIndex,
     fmt"commit index {sm.commitIndex} beyond log {sm.log.lastIndex}"
 
-const loglevel {.intdefine.}: int = int(DebugLogLevel.Error)
+const loglevel {.intdefine.}: int = int(DebugLogLevel.Debug)
 const pollCheckInvariants {.booldefine.} = false
 
 template addDebugLogEntry(
@@ -271,6 +271,60 @@ func replicationStatus*(sm: RaftStateMachineRef): string =
   assert report.len == size
   report
 
+when loglevel >= int(DebugLogLevel.Debug):
+  proc logOutboundRpc(sm: RaftStateMachineRef, msg: RaftRpcMessage) =
+    let header = fmt"send {msg.kind} {sm.myId.id}->{msg.receiver.id} term={msg.currentTerm}"
+    case msg.kind
+    of RaftRpcMessageType.AppendRequest:
+      let req = msg.appendRequest
+      sm.debug fmt"{header} prevIndex={req.previousLogIndex} prevTerm={req.previousTerm} entries={req.entries.len} commitIndex={req.commitIndex}"
+    of RaftRpcMessageType.AppendReply:
+      let reply = msg.appendReply
+      if reply.result == RaftRpcCode.Accepted:
+        sm.debug fmt"{header} accepted lastNewIndex={reply.accepted.lastNewIndex} commitIndex={reply.commitIndex}"
+      else:
+        sm.debug fmt"{header} rejected nonMatchingIndex={reply.rejected.nonMatchingIndex} conflictIndex={reply.rejected.conflictIndex} hasConflictTerm={reply.rejected.conflictTerm.isSome}"
+    of RaftRpcMessageType.VoteRequest:
+      let vote = msg.voteRequest
+      sm.debug fmt"{header} lastLogIndex={vote.lastLogIndex} lastLogTerm={vote.lastLogTerm} force={vote.force}"
+    of RaftRpcMessageType.VoteReply:
+      let vote = msg.voteReply
+      sm.debug fmt"{header} voteGranted={vote.voteGranted}"
+    of RaftRpcMessageType.InstallSnapshot:
+      let snapshot = msg.installSnapshot
+      sm.debug fmt"{header} snapshotIndex={snapshot.snapshot.index} snapshotTerm={snapshot.snapshot.term}"
+    of RaftRpcMessageType.SnapshotReply:
+      let reply = msg.snapshotReply
+      sm.debug fmt"{header} success={reply.success}"
+
+  proc logInboundRpc(sm: RaftStateMachineRef, msg: RaftRpcMessage) =
+    let header = fmt"recv {msg.kind} {msg.sender.id}->{sm.myId.id} term={msg.currentTerm}"
+    case msg.kind
+    of RaftRpcMessageType.AppendRequest:
+      let req = msg.appendRequest
+      sm.debug fmt"{header} prevIndex={req.previousLogIndex} prevTerm={req.previousTerm} entries={req.entries.len} commitIndex={req.commitIndex}"
+    of RaftRpcMessageType.AppendReply:
+      let reply = msg.appendReply
+      if reply.result == RaftRpcCode.Accepted:
+        sm.debug fmt"{header} accepted lastNewIndex={reply.accepted.lastNewIndex} commitIndex={reply.commitIndex}"
+      else:
+        sm.debug fmt"{header} rejected nonMatchingIndex={reply.rejected.nonMatchingIndex} conflictIndex={reply.rejected.conflictIndex} hasConflictTerm={reply.rejected.conflictTerm.isSome}"
+    of RaftRpcMessageType.VoteRequest:
+      let vote = msg.voteRequest
+      sm.debug fmt"{header} lastLogIndex={vote.lastLogIndex} lastLogTerm={vote.lastLogTerm} force={vote.force}"
+    of RaftRpcMessageType.VoteReply:
+      let vote = msg.voteReply
+      sm.debug fmt"{header} voteGranted={vote.voteGranted}"
+    of RaftRpcMessageType.InstallSnapshot:
+      let snapshot = msg.installSnapshot
+      sm.debug fmt"{header} snapshotIndex={snapshot.snapshot.index} snapshotTerm={snapshot.snapshot.term}"
+    of RaftRpcMessageType.SnapshotReply:
+      let reply = msg.snapshotReply
+      sm.debug fmt"{header} success={reply.success}"
+else:
+  template logOutboundRpc(sm: RaftStateMachineRef, msg: RaftRpcMessage) = discard
+  template logInboundRpc(sm: RaftStateMachineRef, msg: RaftRpcMessage) = discard
+
 func new*(
     T: type RaftStateMachineRef,
     id: RaftNodeId,
@@ -311,72 +365,72 @@ func findFollowerProgressById*(
 func sendToImpl*(
     sm: RaftStateMachineRef, id: RaftNodeId, request: RaftRpcAppendRequest
 ) =
-  sm.output.messages.add(
-    RaftRpcMessage(
-      currentTerm: sm.term,
-      receiver: id,
-      sender: sm.myId,
-      kind: RaftRpcMessageType.AppendRequest,
-      appendRequest: request,
-    )
+  let msg = RaftRpcMessage(
+    currentTerm: sm.term,
+    receiver: id,
+    sender: sm.myId,
+    kind: RaftRpcMessageType.AppendRequest,
+    appendRequest: request,
   )
+  sm.logOutboundRpc(msg)
+  sm.output.messages.add(msg)
 
 func sendToImpl*(sm: RaftStateMachineRef, id: RaftNodeId, request: RaftRpcAppendReply) =
-  sm.output.messages.add(
-    RaftRpcMessage(
-      currentTerm: sm.term,
-      receiver: id,
-      sender: sm.myId,
-      kind: RaftRpcMessageType.AppendReply,
-      appendReply: request,
-    )
+  let msg = RaftRpcMessage(
+    currentTerm: sm.term,
+    receiver: id,
+    sender: sm.myId,
+    kind: RaftRpcMessageType.AppendReply,
+    appendReply: request,
   )
+  sm.logOutboundRpc(msg)
+  sm.output.messages.add(msg)
 
 func sendToImpl*(sm: RaftStateMachineRef, id: RaftNodeId, request: RaftRpcVoteRequest) =
-  sm.output.messages.add(
-    RaftRpcMessage(
-      currentTerm: sm.term,
-      receiver: id,
-      sender: sm.myId,
-      kind: RaftRpcMessageType.VoteRequest,
-      voteRequest: request,
-    )
+  let msg = RaftRpcMessage(
+    currentTerm: sm.term,
+    receiver: id,
+    sender: sm.myId,
+    kind: RaftRpcMessageType.VoteRequest,
+    voteRequest: request,
   )
+  sm.logOutboundRpc(msg)
+  sm.output.messages.add(msg)
 
 func sendToImpl*(sm: RaftStateMachineRef, id: RaftNodeId, request: RaftRpcVoteReply) =
-  sm.output.messages.add(
-    RaftRpcMessage(
-      currentTerm: sm.term,
-      receiver: id,
-      sender: sm.myId,
-      kind: RaftRpcMessageType.VoteReply,
-      voteReply: request,
-    )
+  let msg = RaftRpcMessage(
+    currentTerm: sm.term,
+    receiver: id,
+    sender: sm.myId,
+    kind: RaftRpcMessageType.VoteReply,
+    voteReply: request,
   )
+  sm.logOutboundRpc(msg)
+  sm.output.messages.add(msg)
 
 func sendToImpl*(sm: RaftStateMachineRef, id: RaftNodeId, request: RaftSnapshotReply) =
-  sm.output.messages.add(
-    RaftRpcMessage(
-      currentTerm: sm.term,
-      receiver: id,
-      sender: sm.myId,
-      kind: RaftRpcMessageType.SnapshotReply,
-      snapshotReply: request,
-    )
+  let msg = RaftRpcMessage(
+    currentTerm: sm.term,
+    receiver: id,
+    sender: sm.myId,
+    kind: RaftRpcMessageType.SnapshotReply,
+    snapshotReply: request,
   )
+  sm.logOutboundRpc(msg)
+  sm.output.messages.add(msg)
 
 func sendToImpl*(
     sm: RaftStateMachineRef, id: RaftNodeId, request: RaftInstallSnapshot
 ) =
-  sm.output.messages.add(
-    RaftRpcMessage(
-      currentTerm: sm.term,
-      receiver: id,
-      sender: sm.myId,
-      kind: RaftRpcMessageType.InstallSnapshot,
-      installSnapshot: request,
-    )
+  let msg = RaftRpcMessage(
+    currentTerm: sm.term,
+    receiver: id,
+    sender: sm.myId,
+    kind: RaftRpcMessageType.InstallSnapshot,
+    installSnapshot: request,
   )
+  sm.logOutboundRpc(msg)
+  sm.output.messages.add(msg)
 
 func applySnapshot*(sm: RaftStateMachineRef, snapshot: RaftSnapshot, local: bool): bool =
   sm.debug "Apply snapshot" & $snapshot
@@ -404,7 +458,7 @@ func sendTo[MsgType](sm: RaftStateMachineRef, id: RaftNodeId, request: MsgType) 
     if follower.isSome:
       follower.get().lastMessageAt = sm.timeNow
     else:
-      sm.warning "Follower not found: " & $id
+      sm.warning fmt"Follower {id.id} missing from progress tracker (leader={sm.myId.id})"
   #sm.debug "Sent to " & $request
   sm.sendToImpl(id, request)
 
@@ -505,6 +559,7 @@ func becomeFollower*(sm: RaftStateMachineRef, leaderId: RaftNodeId) =
     sm.pingLeader = false
     sm.lastElectionTime = sm.timeNow
   sm.debug "Become follower with leader" & $leaderId
+  sm.info fmt"Transition to follower term={sm.term} leader={leaderId.id}"
 
 func becomeLeader*(sm: RaftStateMachineRef) =
   if sm.state.isLeader:
@@ -519,7 +574,7 @@ func becomeLeader*(sm: RaftStateMachineRef) =
   sm.pingLeader = false
   sm.lastElectionTime = sm.timeNow
   sm.lastQuorumTime = sm.timeNow
-  sm.info "Become leader"
+  sm.info fmt"Transition to leader term={sm.term} lastIndex={sm.log.lastIndex}"
   return
 
 func becomeCandidate*(sm: RaftStateMachineRef) =
@@ -537,6 +592,7 @@ func becomeCandidate*(sm: RaftStateMachineRef) =
       return
 
   sm.term = sm.term + 1
+  sm.info fmt"Transition to candidate term={sm.term} voters={sm.candidate.votes.voters.len}"
   for nodeId in sm.candidate.votes.voters:
     if nodeId == sm.myId:
       sm.debug "register vote for it self in term" & $sm.term
@@ -718,7 +774,7 @@ func appendEntryReply*(
   case reply.result
   of RaftRpcCode.Accepted:
     let lastIndex = reply.accepted.lastNewIndex
-    sm.debug "Accpeted message from " & $fromId & " last log index: " & $lastIndex
+    sm.debug fmt"AppendReply accepted from {fromId.id} lastNewIndex={lastIndex} commitIndex={reply.commitIndex}"
     follower.get().accepted(lastIndex)
     follower.get().lastReplyAt = sm.timeNow
 
@@ -729,7 +785,8 @@ func appendEntryReply*(
     if not sm.state.isLeader:
       return
   of RaftRpcCode.Rejected:
-    sm.debug "Rejected message from " & $fromId & " last log index: " & $reply.rejected
+    let rej = reply.rejected
+    sm.warning fmt"AppendReply rejected from {fromId.id} nonMatchingIndex={rej.nonMatchingIndex} lastIdx={rej.lastIdx} conflictIndex={rej.conflictIndex} hasConflictTerm={rej.conflictTerm.isSome}"
     follower.get().lastReplyAt = sm.timeNow
     if reply.rejected.nonMatchingIndex == 0 and reply.rejected.lastIdx == 0:
       # Legacy hint-free rejection: just try replicate again
@@ -749,7 +806,7 @@ func appendEntryReply*(
           follower.get().nextIndex = reply.rejected.conflictIndex
       else:
         follower.get().nextIndex = reply.rejected.conflictIndex
-    sm.debug $follower.get()
+    sm.debug fmt"Follower progress after rejection: {follower.get()}"
   # if commit apply configuration that removes current follower 
   # we should take it again
   var follower2 = sm.findFollowerProgressById(fromId)
@@ -813,7 +870,7 @@ func appendEntry*(
       rejected: rejected,
     )
     sm.sendTo(fromId, responce)
-    sm.debug "Reject to apply the entry"
+    sm.warning fmt"AppendRequest from {fromId.id} rejected reason={matchReason} prevIndex={request.previousLogIndex} prevTerm={request.previousTerm} followerLastIndex={sm.log.lastIndex} snapshotIndex={sm.log.snapshot.index}"
     return
 
   for entry in request.entries:
@@ -821,11 +878,12 @@ func appendEntry*(
 
   if request.entries.len == 0:
     sm.debug "Handle heartbeat from " & $fromId & "  leader:" & $sm.follower.leader
-   
+  
   if sm.observedState.persistedIndex > sm.log.lastIndex:
     sm.observedState.setPersistedIndex sm.log.lastIndex
 
   sm.advanceCommitIdx(request.commitIndex)
+  sm.debug fmt"AppendRequest from {fromId.id} applied entries={request.entries.len} commitIndex={sm.commitIndex} lastIndex={sm.log.lastIndex}"
   let accepted = RaftRpcAppendReplyAccepted(lastNewIndex: sm.log.lastIndex)
   let responce = RaftRpcAppendReply(
     term: sm.term,
@@ -853,10 +911,11 @@ func requestVote*(
   if canVote and sm.log.isUpToDate(request.lastLogIndex, request.lastLogTerm):
     sm.votedFor = fromId
     sm.lastElectionTime = sm.timeNow
-    sm.debug "Voted for " & $fromId & " term" & $sm.term
+    sm.debug fmt"Granting vote to {fromId.id} term={sm.term} lastLogIndex={request.lastLogIndex} lastLogTerm={request.lastLogTerm} force={request.force}"
     let responce = RaftRpcVoteReply(currentTerm: sm.term, voteGranted: true)
     sm.sendTo(fromId, responce)
   else:
+    sm.debug fmt"Rejecting vote request from {fromId.id} term={request.currentTerm} lastLogIndex={request.lastLogIndex} lastLogTerm={request.lastLogTerm} votedFor={sm.votedFor.id} leader={sm.currentLeader.id}"
     let responce: RaftRpcVoteReply =
       RaftRpcVoteReply(currentTerm: sm.term, voteGranted: false)
     sm.sendTo(fromId, responce)
@@ -905,15 +964,16 @@ func installSnapshotReplay*(
 
 func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime) =
   sm.debug "Advance with" & $msg
+  sm.logInboundRpc(msg)
   if msg.receiver != sm.myId:
+    sm.warning fmt"Ignoring RPC for {msg.receiver.id} (local={sm.myId.id}) from {msg.sender.id}"
     sm.debug "Invalid receiver:" & $msg.receiver & $msg
     return
 
   if now > sm.timeNow:
     sm.timeNow = now
   if msg.currentTerm > sm.term:
-    sm.debug "Current node is behind my term:" & $sm.term & " message term:" &
-      $msg.currentTerm
+    sm.info fmt"Updating term from {sm.term} to {msg.currentTerm} due to {msg.kind} from {msg.sender.id}"
 
     var leaderId = RaftNodeId.empty
     if msg.kind == RaftRpcMessageType.AppendRequest or
@@ -925,7 +985,7 @@ func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime)
   elif msg.currentTerm < sm.term:
     if msg.kind == RaftRpcMessageType.AppendRequest:
       # Instruct leader to step down
-      sm.debug "Reject to apply the entry and instruct leader to step down" & $sm.term & " " & $msg.currentTerm
+      sm.warning fmt"Rejecting AppendRequest from {msg.sender.id} due to lower term local={sm.term} remote={msg.currentTerm}"
       let rejected = RaftRpcAppendReplyRejected(
         nonMatchingIndex: 0,
         lastIdx: sm.log.lastIndex,
@@ -940,8 +1000,10 @@ func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime)
       )
       sm.sendTo(msg.sender, responce)
     elif msg.kind == RaftRpcMessageType.InstallSnapshot:
+      sm.warning fmt"Rejecting InstallSnapshot from {msg.sender.id} due to lower term local={sm.term} remote={msg.currentTerm}"
       sm.sendTo(msg.sender, RaftSnapshotReply(term: sm.term, success: false))
     elif msg.kind == RaftRpcMessageType.VoteRequest:
+      sm.debug fmt"Rejecting VoteRequest from {msg.sender.id} due to lower term local={sm.term} remote={msg.currentTerm}"
       sm.sendTo(msg.sender, RaftRpcVoteReply(currentTerm: sm.term, voteGranted: false))
     else:
       sm.warning "Ignore message with lower term" & $sm.term & " " & $msg
