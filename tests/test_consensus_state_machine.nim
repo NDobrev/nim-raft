@@ -997,6 +997,139 @@ suite "Snapshot replies":
     check follower.isSome()
     check follower.get().nextIndex == sm.log.lastIndex + 1
     check follower.get().matchIndex == snapshot.index
+
+  test "leader keeps reinstalling outdated snapshot when follower snapshot is newer":
+    var (leaderSm, leaderId, followerId, leaderSnapshot) = initLeaderWithSnapshot()
+    doAssert leaderSm.myId == leaderId
+
+    discard leaderSm.addEntry(Empty())
+    discard leaderSm.addEntry(Empty())
+
+    let newerSnapshotIndex = leaderSnapshot.index + 4
+    let config = createConfigFromIds(@[leaderId, followerId])
+    let followerSnapshot =
+      RaftSnapshot(index: newerSnapshotIndex, term: leaderSnapshot.term, config: config)
+
+    var now = dateTime(2017, mMar, 01, 00, 00, 00, 00, utc())
+    let electionTime = times.initDuration(milliseconds = 250)
+    let heartbeatTime = times.initDuration(milliseconds = 50)
+
+    var followerLog = RaftLog.init(followerSnapshot)
+    var followerSm =
+      RaftStateMachineRef.new(
+        followerId,
+        followerSnapshot.term,
+        followerLog,
+        followerSnapshot.index,
+        now,
+        electionTime,
+        heartbeatTime,
+      )
+    followerSm.becomeFollower(leaderId)
+    discard followerSm.poll()
+
+    var followerProgress = leaderSm.findFollowerProgressById(followerId)
+    check followerProgress.isSome()
+    followerProgress.get().nextIndex = leaderSnapshot.index
+
+    leaderSm.replicateTo(followerProgress.get())
+    var leaderOutput = leaderSm.poll()
+    let installMsgs =
+      leaderOutput.messages.filterIt(it.kind == RaftRpcMessageType.InstallSnapshot)
+    check installMsgs.len >= 1
+    let installMsg = installMsgs[0]
+
+    followerSm.advance(installMsg, now)
+    var followerOutput = followerSm.poll()
+    let snapshotReplies =
+      followerOutput.messages.filterIt(it.kind == RaftRpcMessageType.SnapshotReply)
+    check snapshotReplies.len == 1
+    let snapshotReply = snapshotReplies[0]
+    check snapshotReply.snapshotReply.success
+
+    leaderSm.advance(snapshotReply, now)
+    leaderOutput = leaderSm.poll()
+    let appendMsgs =
+      leaderOutput.messages.filterIt(it.kind == RaftRpcMessageType.AppendRequest)
+    check appendMsgs.len == 1
+    let appendMsg = appendMsgs[0]
+    check appendMsg.appendRequest.previousLogIndex == leaderSnapshot.index
+
+    followerSm.advance(appendMsg, now)
+    followerOutput = followerSm.poll()
+    let appendReplies =
+      followerOutput.messages.filterIt(it.kind == RaftRpcMessageType.AppendReply)
+    check appendReplies.len == 1
+    let appendReply = appendReplies[0]
+    check appendReply.appendReply.result == RaftRpcCode.Rejected
+    check appendReply.appendReply.rejected.conflictIndex == followerSnapshot.index + 1
+
+    leaderSm.advance(appendReply, now)
+    leaderOutput = leaderSm.poll()
+    let nextInstallMsgs =
+      leaderOutput.messages.filterIt(it.kind == RaftRpcMessageType.InstallSnapshot)
+    check nextInstallMsgs.len == 0
+    let followupAppends =
+      leaderOutput.messages.filterIt(it.kind == RaftRpcMessageType.AppendRequest)
+    check followupAppends.len == 1
+    check followupAppends[0].appendRequest.previousLogIndex == followerSnapshot.index
+
+  test "leader uses conflict term hint to jump to matching entry":
+    var (sm, leaderId, followerId, snapshot) = initLeaderWithSnapshot()
+    doAssert sm.myId == leaderId
+
+    var follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+
+    let hintedTerm = snapshot.term
+    let reply = RaftRpcAppendReply(
+      commitIndex: snapshot.index,
+      term: snapshot.term,
+      result: RaftRpcCode.Rejected,
+      rejected: RaftRpcAppendReplyRejected(
+        nonMatchingIndex: snapshot.index + 10,
+        lastIdx: sm.log.lastIndex,
+        conflictTerm: some(hintedTerm),
+        conflictIndex: snapshot.index + 1,
+      ),
+    )
+
+    sm.appendEntryReply(followerId, reply)
+
+    follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    let leaderIdx = sm.log.lastIndexOfTerm(hintedTerm)
+    check leaderIdx.isSome()
+    let expectedNextIndex = leaderIdx.get() + 1
+    check follower.get().nextIndex == expectedNextIndex
+
+  test "leader reinstalls snapshot when follower supplies no conflict hint":
+    var (sm, leaderId, followerId, snapshot) = initLeaderWithSnapshot()
+    doAssert sm.myId == leaderId
+
+    var follower = sm.findFollowerProgressById(followerId)
+    check follower.isSome()
+    follower.get().nextIndex = snapshot.index + 2
+
+    let reply = RaftRpcAppendReply(
+      commitIndex: snapshot.index,
+      term: snapshot.term,
+      result: RaftRpcCode.Rejected,
+      rejected: RaftRpcAppendReplyRejected(
+        nonMatchingIndex: snapshot.index + 1,
+        lastIdx: snapshot.index + 10,
+        conflictTerm: none(RaftNodeTerm),
+        conflictIndex: 0,
+      ),
+    )
+
+    sm.appendEntryReply(followerId, reply)
+    let output = sm.poll()
+    let installMsgs = output.messages.filterIt(it.kind == RaftRpcMessageType.InstallSnapshot)
+    check installMsgs.len == 0
+    let retryAppends = output.messages.filterIt(it.kind == RaftRpcMessageType.AppendRequest)
+    check retryAppends.len == 1
+    check retryAppends[0].appendRequest.previousLogIndex == snapshot.index
     
 suite "Persisted index after append entries":
   test "append entries clamps persisted index after truncation":

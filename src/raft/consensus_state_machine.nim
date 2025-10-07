@@ -797,15 +797,26 @@ func appendEntryReply*(
       #     if leader has entries with that term, jump nextIndex to last index of that term + 1
       #     else set nextIndex to follower's conflictIndex
       # - otherwise set nextIndex to follower's conflictIndex
+      var newNextIndex: RaftLogIndex = 0
       if reply.rejected.conflictTerm.isSome:
         let t = reply.rejected.conflictTerm.get()
         let leaderIdxOpt = sm.log.lastIndexOfTerm(t)
         if leaderIdxOpt.isSome:
-          follower.get().nextIndex = leaderIdxOpt.get() + 1
+          newNextIndex = leaderIdxOpt.get() + 1
         else:
-          follower.get().nextIndex = reply.rejected.conflictIndex
+          newNextIndex = reply.rejected.conflictIndex
       else:
-        follower.get().nextIndex = reply.rejected.conflictIndex
+        if reply.rejected.conflictIndex > 0:
+          newNextIndex = reply.rejected.conflictIndex
+        elif reply.rejected.nonMatchingIndex > 0:
+          newNextIndex = reply.rejected.nonMatchingIndex
+        else:
+          newNextIndex = follower.get().nextIndex + 1
+
+      let minNext = sm.log.snapshot.index + 1
+      if newNextIndex <= minNext:
+        newNextIndex = minNext
+      follower.get().nextIndex = newNextIndex
     sm.debug fmt"Follower progress after rejection: {follower.get()}"
   # if commit apply configuration that removes current follower 
   # we should take it again
