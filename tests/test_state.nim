@@ -8,7 +8,7 @@ suite "RaftStateMachineRefState Tests":
     var cfg = RaftConfig()
     var index = RaftLogIndex(0)
     var now = times.now()
-    var state = initLeader(cfg, index, now)
+    var state = initLeader(cfg, index, now, 10)
     check state.state == RaftNodeState.rnsLeader
     check state.isLeader
     check not state.isFollower

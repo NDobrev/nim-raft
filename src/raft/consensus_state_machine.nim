@@ -130,6 +130,7 @@ type
     lastElectionTime: times.DateTime
     randomizedElectionTime: times.Duration
     heartbeatTime: times.Duration
+    maxInFlight*: int  # Maximum number of in-flight append entries in pipeline mode
     timeNow: times.DateTime
     startTime: times.DateTime
     # Last time the leader had evidence of contact with a quorum
@@ -212,30 +213,40 @@ func findFollowerProgressById*(
     sm: RaftStateMachineRef, id: RaftNodeId
 ): Option[RaftFollowerProgressTrackerRef]
 
-func hasRecentQuorum(sm: RaftStateMachineRef, now: times.DateTime): bool =
-  # Count active members in a set: those with recent replies
-  proc activeInSet(ids: seq[RaftNodeId]): int =
-    var count = 0
-    for id in ids:
-      if id == sm.myId:
-        count += 1
-      else:
-        let p = sm.findFollowerProgressById(id)
-        if p.isSome:
-          if now - p.get().lastReplyAt <= sm.randomizedElectionTime:
-            count += 1
-    count
-
-  let quorumCurrent = int(sm.leader.tracker.current.len div 2) + 1
-  if sm.leader.tracker.current.len == 0:
+func isStrayReject(sm: RaftStateMachineRef, follower: RaftFollowerProgressTrackerRef, rejected: RaftRpcAppendReplyRejected): bool =
+  # Check if reject is from previous state (optimization from reference implementation)
+  if rejected.nonMatchingIndex < follower.matchIndex:
     return true
-  let activeCurrent = activeInSet(sm.leader.tracker.current)
-  if sm.log.configuration.isJoint:
-    let quorumPrev = int(sm.leader.tracker.previous.len div 2) + 1
-    let activePrev = activeInSet(sm.leader.tracker.previous)
-    return activeCurrent >= quorumCurrent and activePrev >= quorumPrev
+  if rejected.lastIdx < follower.matchIndex:
+    return true
+  
+  # Check state-specific validation
+  case follower.state:
+  of tracker.RaftFollowerState.Probe:
+    # In PROBE state we send a single append request with prev_log_idx == next_idx - 1.
+    # When the follower generates a rejected response, it sets non_matching_idx = req.prev_log_idx.
+    # Thus the reject either satisfies non_matching_idx == next_idx - 1 or is stray.
+    # However, we also allow non_matching_idx == next_idx for special cases like snapshot rejection.
+    return rejected.nonMatchingIndex != follower.nextIndex - 1 and rejected.nonMatchingIndex != follower.nextIndex
+  of tracker.RaftFollowerState.Snapshot:
+    return true  # Any reject during snapshot is stray
   else:
-    return activeCurrent >= quorumCurrent
+    return false
+
+func hasRecentQuorum*(sm: RaftStateMachineRef, now: times.DateTime): bool =
+  # Simplified quorum detection - count active members including self
+  var activeCount = 1  # Count self
+  for id in sm.leader.tracker.current:
+    if id != sm.myId:
+      let p = sm.findFollowerProgressById(id)
+      if p.isSome:
+        # Use heartbeat timeout instead of election timeout for liveness detection
+        let timeSinceLastReply = now - p.get().lastReplyAt
+        if timeSinceLastReply <= sm.heartbeatTime * 3:  # 3x heartbeat timeout
+          activeCount += 1
+  
+  let quorum = sm.leader.tracker.current.len div 2 + 1
+  return activeCount >= quorum
 
 func getLeaderId*(sm: RaftStateMachineRef): Option[RaftNodeId] =
   if sm.state.isLeader:
@@ -334,6 +345,7 @@ func new*(
     now: times.DateTime,
     randomizedElectionTime: times.Duration,
     heartbeatTime: times.Duration,
+    maxInFlight: int = 10
 ): T =
   var sm = T()
   sm.term = currentTerm
@@ -346,6 +358,7 @@ func new*(
   sm.myId = id
   sm.heartbeatTime = heartbeatTime
   sm.randomizedElectionTime = randomizedElectionTime
+  sm.maxInFlight = maxInFlight
   sm.observedState.observe(sm)
   sm.output = RaftStateMachineRefOutput()
   sm.lastQuorumTime = now
@@ -462,48 +475,67 @@ func sendTo[MsgType](sm: RaftStateMachineRef, id: RaftNodeId, request: MsgType) 
   #sm.debug "Sent to " & $request
   sm.sendToImpl(id, request)
 
-func createVoteRequest*(sm: RaftStateMachineRef): RaftRpcMessage =
-  RaftRpcMessage(
-    currentTerm: sm.term,
-    sender: sm.myId,
-    kind: VoteRequest,
-    voteRequest: RaftRpcVoteRequest(),
-  )
-
-func replicateTo*(sm: RaftStateMachineRef, follower: RaftFollowerProgressTrackerRef) =
-  if follower.nextIndex > sm.log.lastIndex:
+func replicateTo*(sm: RaftStateMachineRef, follower: var RaftFollowerProgressTrackerRef, allowEmpty: bool = true) =
+  # Skip if in snapshot state (waiting for snapshot transfer to complete)
+  if follower.state == tracker.RaftFollowerState.Snapshot:
     return
 
   var previousTerm = sm.log.termForIndex(follower.nextIndex - 1)
   #sm.debug "Replicate to " & $follower[]
   if not previousTerm.isSome:
-    when loglevel >= int(DebugLogLevel.Debug):
-      debugEcho follower.nextIndex - 1, sm.log.lastIndex, sm.log.firstIndex, sm.log.entriesCount
+    sm.debug fmt"nextIndex={follower.nextIndex - 1} lastIndex={sm.log.lastIndex} firstIndex={sm.log.firstIndex} entriesCount={sm.log.entriesCount}"
     let snapshot = sm.log.snapshot
-    follower.replayedIndex = snapshot.index
+    follower.becomeSnapshot(snapshot.index)
     sm.sendTo(follower.id, RaftInstallSnapshot(term: sm.term, snapshot: snapshot))
     return
+  
+  # Check if we have entries to send or if empty messages are allowed
+  let nextIdx = follower.nextIndex
+  if nextIdx > sm.log.lastIndex and not allowEmpty:
+    # No entries to send and empty messages not allowed
+    return
+    
   var request = RaftRpcAppendRequest(
     previousTerm: previousTerm.get(),
     previousLogIndex: follower.nextIndex - 1,
     commitIndex: sm.commitIndex,
     entries: @[],
   )
-
-  let nextIdx = follower.nextIndex
-  let toSendCount = int(sm.log.lastIndex - nextIdx + 1)
-  if toSendCount > 0:
-    request.entries = newSeqOfCap[LogEntry](toSendCount)
-  for i in nextIdx .. sm.log.lastIndex:
-    request.entries.add(sm.log.getEntryByIndex(i))
-    follower.nextIndex += 1
+  
+  # Handle different modes
+  case follower.state:
+  of tracker.RaftFollowerState.Probe:
+    # PROBE mode: send only one entry (or heartbeat if nothing to send)
+    if nextIdx <= sm.log.lastIndex:
+      request.entries.add(sm.log.getEntryByIndex(nextIdx))
+      follower.nextIndex += 1
+    follower.probeSent = true
+    
+  of tracker.RaftFollowerState.Pipeline:
+    # PIPELINE mode: send multiple entries optimistically (or heartbeat if nothing to send)
+    if nextIdx <= sm.log.lastIndex:
+      for i in nextIdx .. sm.log.lastIndex:
+        request.entries.add(sm.log.getEntryByIndex(i))
+        follower.nextIndex += 1
+    follower.inFlight += 1
+    
+  of tracker.RaftFollowerState.Snapshot:
+    # Should not reach here due to early return above
+    return
+    
+  # Send the request
   sm.sendTo(follower.id, request)
+  # Update lastMessageAt to prevent infinite loops
+  follower.lastMessageAt = sm.timeNow
+  # Optimistically update commitIndex to prevent sending redundant heartbeats
+  # The follower will update its commitIndex when it receives this message
+  follower.commitIndex = max(follower.commitIndex, sm.commitIndex)
 
 func replicate*(sm: RaftStateMachineRef) =
   if sm.state.isLeader:
     for followerIndex in 0 ..< sm.leader.tracker.progress.len:
       if sm.myId != sm.leader.tracker.progress[followerIndex].id:
-        sm.replicateTo(sm.leader.tracker.progress[followerIndex])
+        sm.replicateTo(sm.leader.tracker.progress[followerIndex], allowEmpty = false)
 
 func configuration*(sm: RaftStateMachineRef): RaftConfig =
   sm.log.configuration
@@ -569,7 +601,7 @@ func becomeLeader*(sm: RaftStateMachineRef) =
   sm.output.stateChange = true
 
   # Because we will add new entry on the next line
-  sm.state = initLeader(sm.log.configuration, sm.log.lastIndex + 1, sm.timeNow)
+  sm.state = initLeader(sm.log.configuration, sm.log.lastIndex + 1, sm.timeNow, sm.maxInFlight)
   discard sm.addEntry(Empty())
   sm.pingLeader = false
   sm.lastElectionTime = sm.timeNow
@@ -611,21 +643,6 @@ func becomeCandidate*(sm: RaftStateMachineRef) =
     sm.debug "Elecation won" & $(sm.candidate.votes) & $sm.myId
     sm.becomeLeader()
 
-func heartbeat(sm: RaftStateMachineRef, follower: var RaftFollowerProgressTrackerRef) =
-  #sm.info "heartbeat " & $follower.nextIndex
-  var previousTerm = RaftNodeTerm(0)
-  # If the log of the followeris already in sync then we should use the last intedex
-  let previousLogIndex = RaftLogIndex(min(follower.nextIndex - 1, sm.log.lastIndex))
-  if sm.log.lastIndex > 1:
-    previousTerm = sm.log.termForIndex(previousLogIndex).get()
-  let request = RaftRpcAppendRequest(
-    previousTerm: previousTerm,
-    previousLogIndex: previousLogIndex,
-    commitIndex: sm.commitIndex,
-    entries: @[],
-  )
-  sm.debug "Send heartbeat to " & $follower
-  sm.sendTo(follower.id, request)
 
 func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
   assert sm.timeNow <= now
@@ -643,14 +660,31 @@ func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
       return
   else:
     sm.lastQuorumTime = now
+    
+  # Reset probeSent and manage inFlight for each follower
   for followerIndex in 0 ..< sm.leader.tracker.progress.len:
-    var follower = sm.leader.tracker.progress[followerIndex]
-    if sm.myId != follower.id:
-      if follower.matchIndex < sm.log.lastIndex or follower.commitIndex < sm.commitIndex:
-        sm.replicateTo(follower)
-
-      if now - follower.lastMessageAt > sm.heartbeatTime:
-        sm.heartbeat(follower)
+    if sm.myId != sm.leader.tracker.progress[followerIndex].id:
+      # Skip replication if in snapshot state
+      if sm.leader.tracker.progress[followerIndex].state == tracker.RaftFollowerState.Snapshot:
+        continue
+        
+      # Reset probeSent for PROBE mode (allow one probe per tick)
+      if sm.leader.tracker.progress[followerIndex].state == tracker.RaftFollowerState.Probe:
+        sm.leader.tracker.progress[followerIndex].probeSent = false
+        
+      # Decrement inFlight for PIPELINE mode (simulate timeout/retry)
+      if sm.leader.tracker.progress[followerIndex].state == tracker.RaftFollowerState.Pipeline and sm.leader.tracker.progress[followerIndex].inFlight > 0:
+        sm.leader.tracker.progress[followerIndex].inFlight -= 1
+        
+      # Check if we need to replicate
+      # Replicate if follower needs log entries (matchIndex < lastIndex)
+      # OR if it's time for a heartbeat (to maintain leadership)
+      let needsReplication = sm.leader.tracker.progress[followerIndex].matchIndex < sm.log.lastIndex
+      let needsHeartbeat = now - sm.leader.tracker.progress[followerIndex].lastMessageAt >= sm.heartbeatTime
+      let canSend = sm.leader.tracker.progress[followerIndex].canSendTo()
+      
+      if (needsReplication or needsHeartbeat) and canSend:
+        sm.replicateTo(sm.leader.tracker.progress[followerIndex], allowEmpty = true)
 
 func tick*(sm: RaftStateMachineRef, now: times.DateTime) =
   sm.info "Term: " & $sm.term & " commit idx " & $sm.commitIndex &
@@ -763,6 +797,7 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
 func appendEntryReply*(
     sm: RaftStateMachineRef, fromId: RaftNodeId, reply: RaftRpcAppendReply
 ) =
+  sm.debug fmt"appendEntryReply called from {fromId.id}, result={reply.result}"
   if not sm.state.isLeader:
     sm.debug "You can't append append reply to the follower"
     return
@@ -770,6 +805,7 @@ func appendEntryReply*(
   if not follower.isSome:
     sm.debug "Can't find the follower"
     return
+    
   follower.get().commitIndex = max(follower.get().commitIndex, reply.commitIndex)
   case reply.result
   of RaftRpcCode.Accepted:
@@ -777,6 +813,16 @@ func appendEntryReply*(
     sm.debug fmt"AppendReply accepted from {fromId.id} lastNewIndex={lastIndex} commitIndex={reply.commitIndex}"
     follower.get().accepted(lastIndex)
     follower.get().lastReplyAt = sm.timeNow
+    follower.get().lastMessageAt = sm.timeNow  # Update lastMessageAt to prevent infinite heartbeat loops
+    
+    # Decrement inFlight in PIPELINE mode for accepted replies
+    if follower.get().state == tracker.RaftFollowerState.Pipeline:
+      if follower.get().inFlight > 0:
+        follower.get().inFlight -= 1
+    
+    # Move to pipeline state after successful replication
+    if follower.get().state == tracker.RaftFollowerState.Probe:
+      follower.get().becomePipeline()
 
     sm.commit()
     # TODO: Implement leader voluntary step-down logic.
@@ -786,43 +832,54 @@ func appendEntryReply*(
       return
   of RaftRpcCode.Rejected:
     let rej = reply.rejected
-    sm.warning fmt"AppendReply rejected from {fromId.id} nonMatchingIndex={rej.nonMatchingIndex} lastIdx={rej.lastIdx} conflictIndex={rej.conflictIndex} hasConflictTerm={rej.conflictTerm.isSome}"
+    sm.debug fmt"AppendReply rejected from {fromId.id} nonMatchingIndex={rej.nonMatchingIndex} lastIdx={rej.lastIdx} conflictIndex={rej.conflictIndex} hasConflictTerm={rej.conflictTerm.isSome} followerNextIndex={follower.get().nextIndex} followerMatchIndex={follower.get().matchIndex}"
     follower.get().lastReplyAt = sm.timeNow
+    
+    # Check for stray reject (optimization from reference implementation)
+    if isStrayReject(sm, follower.get(), rej):
+      sm.debug fmt"Dropping stray reject from {fromId.id}: nonMatchingIndex={rej.nonMatchingIndex}, lastIdx={rej.lastIdx}, conflictIndex={rej.conflictIndex}, followerNextIndex={follower.get().nextIndex}, followerMatchIndex={follower.get().matchIndex}"
+      return
+    
+    sm.debug fmt"Processing reject: nonMatchingIndex={rej.nonMatchingIndex}, lastIdx={rej.lastIdx}, conflictIndex={rej.conflictIndex}"
+    
+    # Move back to PROBE state on rejection
+    follower.get().becomeProbe()
+    
     if reply.rejected.nonMatchingIndex == 0 and reply.rejected.lastIdx == 0:
-      # Legacy hint-free rejection: just try replicate again
+      # Special case: follower looking for leader, send empty append
       sm.replicateTo(follower.get())
     else:
-      # Conflict optimization per Raft thesis:
-      # - if follower provided conflictTerm:
-      #     if leader has entries with that term, jump nextIndex to last index of that term + 1
-      #     else set nextIndex to follower's conflictIndex
-      # - otherwise set nextIndex to follower's conflictIndex
+      # Raft-spec-compliant conflict resolution with full optimization
       var newNextIndex: RaftLogIndex = 0
-      if reply.rejected.conflictTerm.isSome:
-        let t = reply.rejected.conflictTerm.get()
-        let leaderIdxOpt = sm.log.lastIndexOfTerm(t)
-        if leaderIdxOpt.isSome:
-          newNextIndex = leaderIdxOpt.get() + 1
-        else:
-          newNextIndex = reply.rejected.conflictIndex
-      else:
-        if reply.rejected.conflictIndex > 0:
-          newNextIndex = reply.rejected.conflictIndex
-        elif reply.rejected.nonMatchingIndex > 0:
-          newNextIndex = reply.rejected.nonMatchingIndex
-        else:
-          newNextIndex = follower.get().nextIndex + 1
-
       let minNext = sm.log.snapshot.index + 1
-      if newNextIndex <= minNext:
-        newNextIndex = minNext
-      follower.get().nextIndex = newNextIndex
+      
+      # Handle conflictTerm hint (Raft paper optimization)
+      if rej.conflictTerm.isSome:
+        let conflictTerm = rej.conflictTerm.get()
+        let leaderIdxOpt = sm.log.lastIndexOfTerm(conflictTerm)
+        if leaderIdxOpt.isSome:
+          # Leader has entries with that term, jump to last index of that term + 1
+          newNextIndex = leaderIdxOpt.get() + 1
+          sm.debug fmt"Leader has conflictTerm {conflictTerm}, using lastIndex {leaderIdxOpt.get()} + 1 = {newNextIndex}"
+        else:
+          # Leader doesn't have that term, use conflictIndex
+          newNextIndex = rej.conflictIndex
+          sm.debug fmt"Leader doesn't have conflictTerm {conflictTerm}, using conflictIndex {rej.conflictIndex}"
+      else:
+        # No conflictTerm hint, but still use conflictIndex if provided
+        if rej.conflictIndex > 0:
+          newNextIndex = rej.conflictIndex
+          sm.debug fmt"No conflictTerm hint, using conflictIndex {rej.conflictIndex}"
+        else:
+          # Fall back to simple approach
+          newNextIndex = min(rej.nonMatchingIndex, rej.lastIdx + 1)
+          sm.debug fmt"No conflictIndex hint, using min({rej.nonMatchingIndex}, {rej.lastIdx + 1}) = {newNextIndex}"
+      
+      # Apply the calculated nextIndex, ensuring it's not below minimum
+      follower.get().nextIndex = max(newNextIndex, minNext)
+      sm.debug fmt"Final nextIndex = max({newNextIndex}, {minNext}) = {follower.get().nextIndex}"
+      
     sm.debug fmt"Follower progress after rejection: {follower.get()}"
-  # if commit apply configuration that removes current follower 
-  # we should take it again
-  var follower2 = sm.findFollowerProgressById(fromId)
-  if follower2.isSome:
-    sm.replicateTo(follower2.get())
 
 func advanceCommitIdx(sm: RaftStateMachineRef, leaderIdx: RaftLogIndex) =
   let newIdx = min(leaderIdx, sm.log.lastIndex)
@@ -844,6 +901,7 @@ func appendEntry*(
     var conflictIndex: RaftLogIndex = 0
     let fi = sm.log.firstIndex
     let li = sm.log.lastIndex
+    
     if request.previousLogIndex > li:
       # Follower log too short
       conflictIndex = li + 1
@@ -868,6 +926,7 @@ func appendEntry*(
       else:
         # Should not happen, but provide a conservative hint
         conflictIndex = fi
+    
     let rejected = RaftRpcAppendReplyRejected(
       nonMatchingIndex: request.previousLogIndex,
       lastIdx: sm.log.lastIndex,
@@ -958,20 +1017,30 @@ func installSnapshotReplay*(
 
   let followerRef = follower.get()
   followerRef.lastReplyAt = sm.timeNow
+  
+  # Determine snapshot index - use replayedIndex if set, otherwise use log's snapshot index
   var snapshotIndex = followerRef.replayedIndex
   if snapshotIndex == 0:
     snapshotIndex = sm.log.snapshot.index
-  let nextIndex = snapshotIndex + 1
-  followerRef.nextIndex = max(followerRef.nextIndex, nextIndex)
+  
+  # Update progress based on snapshot (regardless of success/failure)
+  # Even if snapshot transfer failed, assume follower might have it
+  followerRef.nextIndex = max(followerRef.nextIndex, snapshotIndex + 1)
   followerRef.matchIndex = max(followerRef.matchIndex, snapshotIndex)
   followerRef.commitIndex = max(followerRef.commitIndex, sm.commitIndex)
   followerRef.replayedIndex = 0
-
-  if not replay.success:
+  
+  if replay.success:
+    sm.debug "Snapshot reply accepted for follower " & $fromId & " index " & $snapshotIndex
+    # Move to pipeline mode after successful snapshot to send all remaining entries
+    followerRef.becomePipeline()
+  else:
     sm.debug "Snapshot reply rejected for follower " & $fromId & " index " &
       $snapshotIndex
-
-  sm.replicateTo(followerRef)
+    # Move to pipeline mode to try sending all remaining entries
+    followerRef.becomePipeline()
+  
+  # Let the next poll() cycle send the append entries via replicate()
 
 func advance*(sm: RaftStateMachineRef, msg: RaftRpcMessage, now: times.DateTime) =
   sm.debug "Advance with" & $msg

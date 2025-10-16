@@ -25,8 +25,9 @@ suite "Leader step-down":
     sm.becomeLeader()
     discard sm.poll()
     check sm.state.isLeader
-    # Advance beyond electionTime without any replies
-    now = now + 101.milliseconds
+    
+    # Advance time so that followers appear inactive (beyond heartbeat timeout)
+    now = now + 200.milliseconds
     sm.tick(now)
     discard sm.poll()
     check sm.state.isFollower

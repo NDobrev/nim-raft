@@ -8,6 +8,11 @@ type
     Won = 1
     Lost = 2
 
+  RaftFollowerState* = enum
+    Probe = 0
+    Pipeline = 1  
+    Snapshot = 2
+
   RaftElectionTracker* = object
     all: seq[RaftNodeId]
     responded: seq[RaftNodeId]
@@ -24,6 +29,7 @@ type
     progress*: RaftFollowerProgress
     current*: seq[RaftNodeId]
     previous*: seq[RaftNodeId]
+    maxInFlight*: int
 
   RaftFollowerProgressTrackerRef* = ref object
     id*: RaftNodeId
@@ -34,6 +40,10 @@ type
     replayedIndex*: RaftLogIndex
     lastMessageAt*: times.DateTime
     lastReplyAt*: times.DateTime
+    state*: RaftFollowerState
+    probeSent*: bool
+    inFlight*: int
+    maxInFlight*: int
 
   MatchSeqRef = ref object
     match: seq[RaftLogIndex]
@@ -124,6 +134,7 @@ func new*(
     follower: RaftNodeId,
     nextIndex: RaftLogIndex,
     now: times.DateTime,
+    maxInFlight: int,
 ): T =
   T(
     id: follower,
@@ -132,7 +143,11 @@ func new*(
     commitIndex: 0,
     replayedIndex: 0,
     lastMessageAt: now,
-    lastReplyAt: now,
+    lastReplyAt: now,  # Initialize to current time
+    state: RaftFollowerState.Probe,
+    probeSent: false,
+    inFlight: 0,
+    maxInFlight: maxInFlight,
   )
 
 func new*(
@@ -146,6 +161,10 @@ func new*(
     matchIndex: 0,
     commitIndex: 0,
     replayedIndex: 0,
+    state: RaftFollowerState.Probe,
+    probeSent: false,
+    inFlight: 0,
+    maxInFlight: 10,  # Default value
   )
 
 func find(s: var RaftFollowerProgress, what: RaftNodeId): int =
@@ -176,7 +195,7 @@ func setConfig*(
     if oldp != -1:
       tracker.progress.add(oldProgress[oldp])
     else:
-      let progress = RaftFollowerProgressTrackerRef.new(s, nextIndex, now)
+      let progress = RaftFollowerProgressTrackerRef.new(s, nextIndex, now, tracker.maxInFlight)
       tracker.progress.add(progress)
 
   if config.isJoint:
@@ -190,15 +209,17 @@ func setConfig*(
       if oldp != -1:
         tracker.progress.add(oldProgress[oldp])
       else:
-        tracker.progress.add(RaftFollowerProgressTrackerRef.new(s, nextIndex, now))
+        tracker.progress.add(RaftFollowerProgressTrackerRef.new(s, nextIndex, now, tracker.maxInFlight))
 
 func init*(
     T: type RaftTracker,
     config: RaftConfig,
     nextIndex: RaftLogIndex,
     now: times.DateTime,
+    maxInFlight: int = 10,
 ): T =
   var tracker = T()
+  tracker.maxInFlight = maxInFlight  # Set maxInFlight before setConfig
   tracker.setConfig(config, nextIndex, now)
   tracker
 
@@ -226,6 +247,32 @@ func accepted*(fpt: var RaftFollowerProgressTrackerRef, index: RaftLogIndex) =
   fpt.matchIndex = max(fpt.matchIndex, index)
   fpt.nextIndex = max(fpt.nextIndex, index + 1)
 
+# State transition methods
+func becomeProbe*(follower: RaftFollowerProgressTrackerRef) =
+  follower.state = RaftFollowerState.Probe
+  follower.probeSent = false
+  follower.inFlight = 0 
+
+func becomePipeline*(follower: RaftFollowerProgressTrackerRef) =
+  if follower.state != RaftFollowerState.Pipeline:
+    follower.state = RaftFollowerState.Pipeline
+    follower.inFlight = 0
+    follower.probeSent = false  # probeSent is not used in PIPELINE mode
+
+func becomeSnapshot*(follower: RaftFollowerProgressTrackerRef, snapshotIndex: RaftLogIndex) =
+  follower.state = RaftFollowerState.Snapshot
+  follower.nextIndex = snapshotIndex + 1
+
+
+func canSendTo*(follower: RaftFollowerProgressTrackerRef): bool =
+  case follower.state:
+    of RaftFollowerState.Probe:
+      not follower.probeSent
+    of RaftFollowerState.Pipeline:
+      follower.inFlight < follower.maxInFlight
+    of RaftFollowerState.Snapshot:
+      false  # Cannot send during snapshot transfer
+  
 func `$`*(progress: RaftFollowerProgressTrackerRef): string =
   fmt"""
     Progress status

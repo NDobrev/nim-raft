@@ -32,11 +32,11 @@ func `$`*(s: RaftStateMachineRefState): string =
   $s.state
 
 func initLeader*(
-    cfg: RaftConfig, index: RaftLogIndex, now: times.DateTime
+    cfg: RaftConfig, index: RaftLogIndex, now: times.DateTime, maxInFlight: int
 ): RaftStateMachineRefState =
   var state =
     RaftStateMachineRefState(state: RaftNodeState.rnsLeader, leader: LeaderState())
-  state.leader.tracker = RaftTracker.init(cfg, index, now)
+  state.leader.tracker = RaftTracker.init(cfg, index, now, maxInFlight)
   state
 
 func initFollower*(leaderId: RaftNodeId): RaftStateMachineRefState =

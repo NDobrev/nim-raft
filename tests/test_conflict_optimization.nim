@@ -29,7 +29,7 @@ suite "AppendEntries conflict optimization":
     var follower = sm.findFollowerProgressById(id2)
     check follower.isSome()
     # Set a divergent nextIndex to confirm it changes
-    follower.get().nextIndex = 100
+    follower.get().nextIndex = 6
 
     let rej = RaftRpcAppendReplyRejected(
       nonMatchingIndex: 5,
@@ -62,7 +62,7 @@ suite "AppendEntries conflict optimization":
     discard sm.poll()
     var follower = sm.findFollowerProgressById(id2)
     check follower.isSome()
-    follower.get().nextIndex = 100
+    follower.get().nextIndex = 11
     let rej = RaftRpcAppendReplyRejected(
       nonMatchingIndex: 10,
       lastIdx: sm.log.lastIndex,
@@ -171,7 +171,7 @@ suite "AppendEntries conflict optimization":
     discard sm.poll()
     var follower = sm.findFollowerProgressById(id2)
     check follower.isSome()
-    follower.get().nextIndex = 100
+    follower.get().nextIndex = 6
     let rej = RaftRpcAppendReplyRejected(
       nonMatchingIndex: 5,
       lastIdx: sm.log.lastIndex,

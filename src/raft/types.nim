@@ -7,14 +7,9 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-import tables
-
 type
   RaftNodeId* = object
     id*: string # uuid4 uniquely identifying every Raft Node
-  StringCache = ref object
-    cache*: Table[string, string]       # string -> interned string
-    revCache*: Table[ptr char, string]  # pointer -> original string
 
   RaftNodeTerm* = uint64 # Raft Node Term Type
   RaftLogIndex* = uint64 # Raft Node Log Index Type
