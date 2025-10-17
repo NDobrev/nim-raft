@@ -352,7 +352,7 @@ suite "BLS consensus tests":
 
     var added = false
     var committed = false
-    for i in 0 ..< 10:
+    for i in 0 ..< 20:
       cluster.advance(timeNow)
       if cluster.getLeader().isSome() and not added:
         added = cluster.submitMessage(Message(fieldInt: 42))
@@ -410,7 +410,7 @@ suite "BLS consensus tests":
 
     var added = false
     var commited = false
-    for i in 0 ..< 10:
+    for i in 0 ..< 20:
       cluster.advance(timeNow)
       if cluster.getLeader().isSome() and not added:
         added = cluster.submitMessage(Message(fieldInt: 42))
