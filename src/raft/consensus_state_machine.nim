@@ -820,12 +820,15 @@ func isStrayReject(
   ##
   ## A rejection is stray if:
   ## 1. It claims mismatch at an index we know is matched (nonMatchingIndex <= matchIndex)
+  ##    BUT: When matchIndex==0 we're in initial discovery, so nonMatchingIndex==0 is valid
   ## 2. Follower's log is shorter than what we know matched (lastIdx < matchIndex)
   ## 3. In PROBE mode, rejection is not for the exact request we sent (nonMatchingIndex != nextIndex - 1)
   ## 4. In SNAPSHOT mode, any rejection is stray (we're waiting for snapshot transfer)
   
-  # If follower claims mismatch at index we know is matched, it's stray
-  if rejected.nonMatchingIndex <= follower.matchIndex:
+  # If follower claims mismatch at an index we know is matched, it's stray.
+  # Exception: When matchIndex=0 (initial state), we're still discovering follower state,
+  # so even if nonMatchingIndex=0, it's a valid rejection indicating no common ground.
+  if follower.matchIndex > 0 and rejected.nonMatchingIndex <= follower.matchIndex:
     return true
   
   # If follower's log is shorter than what we know matched, it's stray  
