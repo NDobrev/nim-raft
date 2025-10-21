@@ -10,7 +10,6 @@ import std/strformat
 import scenario_runner
 import scenario_config
 import ../report/ci_summary
-import ../report/html_timeline
 
 proc printUsage() =
   echo "Raft Simulation Runner"
@@ -163,10 +162,6 @@ proc main() =
   if lastRunner != nil:
     let summary = generateCiSummary(lastRunner.jsonWriter.trace)
     printToStdout(summary)
-
-    # Generate HTML timeline
-    let htmlGenerator = newHtmlTimelineGenerator(lastRunner.jsonWriter.trace)
-    htmlGenerator.writeToFile(lastRunner.jsonWriter.trace.config.artifacts.html)
 
     # Print some basic statistics from the last runner
     echo "Total time simulated: ", lastRunner.clock.nowMs, "ms"

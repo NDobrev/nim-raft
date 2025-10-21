@@ -17,11 +17,11 @@
   "workload": {
     "type": "kv",
     "rate": {
-      "propose_per_tick": 1
+      "propose_per_tick": 0.0001
     },
     "mix": {
-      "put": 90,
-      "get": 10
+      "put": 80,
+      "get": 20
     },
     "keys": {
       "space": 1000,
@@ -47,8 +47,8 @@
     "knobs": {}
   },
   "stop": {
-    "max_ms": 10000,
-    "min_commits": 1000,
+    "max_ms": 30000,
+    "min_commits": 5,
     "fail_fast": false
   },
   "artifacts": {

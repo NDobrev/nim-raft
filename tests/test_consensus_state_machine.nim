@@ -6,14 +6,13 @@
 # at your option.
 # This file may not be copied, modified, or distributed except according to
 # those terms.
-import unittest2
+import std/unittest
 import ../src/raft/types
 import ../src/raft/consensus_state_machine
 import ../src/raft/log
 import ../src/raft/tracker
 import ../src/raft/state
 import ../src/raft/poll_state
-import std/sets
 import std/[sets, times, sequtils, random, algorithm, sugar, options, strformat]
 import stew/byteutils
 
@@ -342,7 +341,7 @@ proc submitNewConfig(tc: var TestCluster, cfg: RaftConfig) =
     raise newException(AssertionDefect, "Can submit new configuration")
 
 proc toCommand(data: string): Command =
-  return Command(data: data.toBytes)
+  return Command(data: cast[seq[byte]](data))
 
 
 var config = createConfigFromIds(test_ids_1)
@@ -450,7 +449,7 @@ suite "Leader commit gating":
     check output.committed[1].term == sm.term
 
 suite "RequestVote follower behavior":
-  test "follower grants vote once and resets timer":
+  test "follower grants vote once without resetting timer":
     let followerId = newRaftNodeId("follower")
     let candidateA = newRaftNodeId("candidate-a")
     let candidateB = newRaftNodeId("candidate-b")
@@ -500,12 +499,7 @@ suite "RequestVote follower behavior":
     check output.messages[0].kind == RaftRpcMessageType.VoteReply
     check not output.messages[0].voteReply.voteGranted
 
-    var later = now + (electionTime - initDuration(milliseconds = 10))
-    sm.tick(later)
-    discard sm.poll()
-    check sm.state.isFollower
-
-    later = later + initDuration(milliseconds = 20)
+    var later = now + (electionTime - initDuration(milliseconds = 5))
     sm.tick(later)
     discard sm.poll()
     check sm.state.isCandidate

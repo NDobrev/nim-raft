@@ -39,8 +39,6 @@ type
     electionTimeoutMs*: int64
     heartbeatTimeoutMs*: int64
 
-    # Simple integer-based election timing
-    lastElectionTimeMs*: int64
 
 # Types are now used directly - no conversion needed
 
@@ -69,14 +67,15 @@ method initialize*(adapter: RaftSmAdapter, nodeId: RaftNodeId, callbacks: RaftHo
   )
   let initialLog = RaftLog.init(initialSnapshot)
 
-  # Create RaftStateMachineRef
-  let dummyNow = times.fromUnix(0).utc  # We'll handle timing ourselves
+  # Create RaftStateMachineRef with correct initial time
+  let initialTimeMs = adapter.callbacks.getTime()
+  let initialNow = times.fromUnix(initialTimeMs div 1000).utc + times.initDuration(milliseconds = initialTimeMs mod 1000)
   adapter.raft = RaftStateMachineRef.new(
     id = nodeId,
     currentTerm = 0,
     log = initialLog,
     commitIndex = 0,
-    now = dummyNow,
+    now = initialNow,
     randomizedElectionTime = times.initDuration(milliseconds = adapter.electionTimeoutMs),
     heartbeatTime = times.initDuration(milliseconds = adapter.heartbeatTimeoutMs)
   )
@@ -86,33 +85,17 @@ method step*(adapter: RaftSmAdapter, rpc: RaftRpcMessage) =
   ## Process an incoming RPC message
   let currentTimeMs = adapter.callbacks.getTime()
 
-  # Reset election timer when receiving heartbeats from leader
-  if rpc.kind == AppendRequest and adapter.raft.state.isFollower:
-    adapter.lastElectionTimeMs = currentTimeMs
-
-  let dummyNow = times.fromUnix(0).utc  # We'll handle timing ourselves
-  adapter.raft.advance(rpc, dummyNow)
+  # Convert current time to DateTime for raft (include milliseconds)
+  let now = times.fromUnix(currentTimeMs div 1000).utc + times.initDuration(milliseconds = currentTimeMs mod 1000)
+  adapter.raft.advance(rpc, now)
 
 method tick*(adapter: RaftSmAdapter) =
   ## Process a timer tick
   let currentTimeMs = adapter.callbacks.getTime()
 
-  # Check for election timeout using integer arithmetic
-  if adapter.raft.state.isFollower and currentTimeMs - adapter.lastElectionTimeMs > adapter.electionTimeoutMs:
-    echo fmt"Node {adapter.nodeId}: Election timeout! Becoming candidate at t={currentTimeMs}ms"
-    adapter.lastElectionTimeMs = currentTimeMs
-    # Call becomeCandidate on the Raft state machine
-    adapter.raft.becomeCandidate()
-  elif adapter.raft.state.isCandidate:
-    # Check if candidate election timed out (should start new election)
-    if currentTimeMs - adapter.lastElectionTimeMs > adapter.electionTimeoutMs:
-      echo fmt"Node {adapter.nodeId}: Candidate election timeout! Starting new election at t={currentTimeMs}ms"
-      adapter.lastElectionTimeMs = currentTimeMs
-      adapter.raft.becomeCandidate()
-
-  # Use a dummy DateTime for the Raft tick (since we're handling timeouts ourselves)
-  let dummyNow = times.fromUnix(0).utc
-  adapter.raft.tick(dummyNow)
+  # Pass correct time to raft - it will handle its own election timeouts
+  let now = times.fromUnix(currentTimeMs div 1000).utc + times.initDuration(milliseconds = currentTimeMs mod 1000)
+  adapter.raft.tick(now)
 
   # Poll the state machine to get any pending messages and apply commits
   let output = adapter.raft.poll()
@@ -160,12 +143,22 @@ method getState*(adapter: RaftSmAdapter): NodeState =
              else:
                sim_types.Follower
 
+  # Collect log entries from the Raft log
+  var logEntries: seq[LogEntry] = @[]
+  let log = adapter.raft.log
+  for i in log.firstIndex .. log.lastIndex:
+    logEntries.add(log.getEntryByIndex(i))
+
+  # Poll to get current votedFor (this is a read-only operation for invariants)
+  let output = adapter.raft.poll()
+  let votedFor = output.votedFor
+
   NodeState(
     id: adapter.nodeId,
     role: role,
     currentTerm: RaftNodeTerm(adapter.raft.term),
-    votedFor: none(RaftNodeId),  # TODO: Access current votedFor properly
-    log: @[], # TODO: Cannot access private logEntries field
+    votedFor: votedFor,
+    log: logEntries,
     commitIndex: RaftLogIndex(adapter.raft.commitIndex),
     lastApplied: RaftLogIndex(adapter.raft.commitIndex),  # Simplified
     nextIndex: initTable[RaftNodeId, RaftLogIndex](),  # Would need to be populated from leader state
@@ -191,6 +184,5 @@ proc newRaftSmAdapter*(config: ScenarioYaml, nodeId: RaftNodeId, electionRng: Si
     pendingCommands: @[],
     lastPolledTime: 0,
     electionTimeoutMs: electionTimeoutMs,
-    heartbeatTimeoutMs: config.cluster.heartbeat_ms,
-    lastElectionTimeMs: 0  # Start with election timer at 0
+    heartbeatTimeoutMs: config.cluster.heartbeat_ms
   )

@@ -66,27 +66,44 @@ proc checkElectionSafety*(checker: InvariantsChecker, nodes: seq[NodeHost], curr
       )
 
 proc checkLogMatching*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
-  ## Check Log Matching: if two logs contain entry at same index with same term
-  var logsByIndex: Table[RaftLogIndex, Table[RaftNodeTerm, seq[RaftNodeId]]]
-
+  ## Check Log Matching: committed entries must be identical across all nodes
+  # Find the minimum commit index across all nodes
+  var minCommitIndex = RaftLogIndex.high
   for node in nodes:
     let state = node.getState()
-    for entry in state.log:
-      if not logsByIndex.contains(entry.index):
-        logsByIndex[entry.index] = initTable[RaftNodeTerm, seq[RaftNodeId]]()
-      if not logsByIndex[entry.index].contains(entry.term):
-        logsByIndex[entry.index][entry.term] = @[]
-      logsByIndex[entry.index][entry.term].add(state.id)
+    minCommitIndex = min(minCommitIndex, state.commitIndex)
 
-  # Check for conflicts
-  for index, terms in logsByIndex:
-    if terms.len > 1:
+  # Check that all committed entries are identical
+  for commitIdx in 1..minCommitIndex.int:
+    let index = RaftLogIndex(commitIdx)
+    var entriesAtIndex: Table[string, seq[RaftNodeId]]  # Use string representation of entry
+
+    for node in nodes:
+      let state = node.getState()
+      if state.commitIndex >= index:
+        # Node should have this committed entry
+        let entryOpt = state.log.entryAt(index)
+        if entryOpt.isSome:
+          let entry = entryOpt.get()
+          let entryStr = fmt"term:{entry.term},kind:{entry.kind}"
+          if not entriesAtIndex.contains(entryStr):
+            entriesAtIndex[entryStr] = @[]
+          entriesAtIndex[entryStr].add(state.id)
+        else:
+          # Node is missing a committed entry - this is a violation
+          checker.recordViolation(currentTime,
+            "Log Matching Violation",
+            fmt"Node {state.id} missing committed entry at index {index}"
+          )
+
+    # Check for conflicts at this committed index
+    if entriesAtIndex.len > 1:
       var conflictDesc = ""
-      for term, nodes in terms:
-        conflictDesc &= fmt"term {term}: {nodes}; "
+      for entryStr, nodeIds in entriesAtIndex:
+        conflictDesc &= fmt"{entryStr}: {nodeIds}; "
       checker.recordViolation(currentTime,
         "Log Matching Violation",
-        fmt"Index {index} has conflicting terms: {conflictDesc}"
+        fmt"Committed index {index} has conflicting entries: {conflictDesc}"
       )
 
 proc checkLeaderAppendOnly*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
@@ -130,6 +147,7 @@ proc checkLeaderCompleteness*(checker: InvariantsChecker, nodes: seq[NodeHost], 
         let found = state.log.anyIt(it.index == RaftLogIndex(i))
         if not found:
           hasAllEntries = false
+          echo fmt"Leader {state.id} missing committed entry at index {i} in log: {state.log}"
           break
 
       if not hasAllEntries:
@@ -158,7 +176,7 @@ proc checkLiveness*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTim
   ## Check basic liveness: some progress should be made over time
   # This is a simple check - in a real system we'd check for election timeouts, etc.
   let timeSinceLastCheck = currentTime - checker.lastCheckedTime
-  if timeSinceLastCheck > 5000:  # Check every 5 seconds
+  if timeSinceLastCheck > 500:  # Check every 5 seconds
     var totalCommits = 0
     for node in nodes:
       let state = node.getState()

@@ -78,6 +78,7 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            border-radius: 8px;\n" &
            "            box-shadow: 0 2px 4px rgba(0,0,0,0.1);\n" &
            "            overflow: hidden;\n" &
+           "            width: 100%;\n" &
            "        }\n" &
            "\n" &
            "        .timeline-header {\n" &
@@ -111,12 +112,15 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "        .timeline-canvas {\n" &
            "            position: relative;\n" &
            "            height: 400px;\n" &
+           "            width: 100%;\n" &
            "            background: #ffffff;\n" &
            "        }\n" &
            "\n" &
            "        .node-track {\n" &
            "            position: absolute;\n" &
            "            height: 60px;\n" &
+           "            left: 0;\n" &
+           "            right: 0;\n" &
            "            border-bottom: 1px solid #e2e8f0;\n" &
            "            display: flex;\n" &
            "            align-items: center;\n" &
@@ -134,6 +138,7 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            flex: 1;\n" &
            "            position: relative;\n" &
            "            height: 100%;\n" &
+           "            min-width: 100px; /* Ensure minimum width for timeline */\n" &
            "        }\n" &
            "\n" &
            "        .time-marker {\n" &
@@ -164,38 +169,45 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "\n" &
            "        .leader {\n" &
            "            background: #059669;\n" &
+           "            z-index: 1;\n" &
            "        }\n" &
            "\n" &
            "        .candidate {\n" &
            "            background: #d97706;\n" &
+           "            z-index: 1;\n" &
            "        }\n" &
            "\n" &
            "        .follower {\n" &
            "            background: #6b7280;\n" &
+           "            z-index: 1;\n" &
            "        }\n" &
            "\n" &
            "        .commit {\n" &
            "            background: #2563eb;\n" &
            "            height: 20px;\n" &
            "            border-radius: 2px;\n" &
+           "            z-index: 10;\n" &
            "        }\n" &
            "\n" &
            "        .violation {\n" &
            "            background: #dc2626;\n" &
            "            height: 20px;\n" &
            "            border-radius: 2px;\n" &
+           "            z-index: 10;\n" &
            "        }\n" &
            "\n" &
            "        .partition {\n" &
            "            background: #7c3aed;\n" &
            "            height: 20px;\n" &
            "            border-radius: 2px;\n" &
+           "            z-index: 10;\n" &
            "        }\n" &
            "\n" &
            "        .restart {\n" &
            "            background: #db2777;\n" &
            "            height: 20px;\n" &
            "            border-radius: 2px;\n" &
+           "            z-index: 10;\n" &
            "        }\n" &
            "\n" &
            "        .legend {\n" &
@@ -309,7 +321,7 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            <div class=\"controls\">\n" &
            "                <div class=\"control-group\">\n" &
            "                    <label for=\"timeRange\">Time Range:</label>\n" &
-           "                    <input type=\"range\" id=\"timeRange\" min=\"0\" max=\"" & $trace.totalTicks & "\" value=\"" & $trace.totalTicks & "\">\n" &
+           "                    <input type=\"range\" id=\"timeRange\" min=\"1\" max=\"" & $trace.totalTicks & "\" value=\"" & $trace.totalTicks & "\">\n" &
            "                    <span id=\"timeDisplay\">" & $trace.totalTicks & "ms</span>\n" &
            "                </div>\n" &
            "                <div class=\"control-group\">\n" &
@@ -377,6 +389,9 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "        const messageStatsList = document.getElementById('messageStatsList');\n" &
            "        const timeRange = document.getElementById('timeRange');\n" &
            "        const timeDisplay = document.getElementById('timeDisplay');\n" &
+           "        const showCommits = document.getElementById('showCommits');\n" &
+           "        const showViolations = document.getElementById('showViolations');\n" &
+           "        const showPartitions = document.getElementById('showPartitions');\n" &
            "\n" &
            "        let maxTime = traceData.totalTicks;\n" &
            "        let currentMaxTime = maxTime;\n" &
@@ -414,9 +429,22 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "        }\n" &
            "\n" &
            "        function drawNodeTimeline(nodeId, timeline) {\n" &
+           "            // Handle edge case where currentMaxTime is 0\n" &
+           "            if (currentMaxTime <= 0) {\n" &
+           "                return;\n" &
+           "            }\n" &
+           "\n" &
            "            const states = traceData.clusterStates.filter(s => s.timeMs <= currentMaxTime);\n" &
            "            let lastRole = null;\n" &
            "            let lastTime = 0;\n" &
+           "            let lastMarkedCommitIndex = 0;\n" &
+           "\n" &
+           "            // Minimum width to ensure visibility (in pixels)\n" &
+           "            const minWidthPx = 2;\n" &
+           "            const canvas = document.getElementById('timelineCanvas');\n" &
+           "            const canvasWidth = canvas.offsetWidth || Math.max(window.innerWidth - 100, 600);\n" &
+           "            const timelineWidth = canvasWidth - 80; // subtract label width\n" &
+           "            const minWidthPercent = (minWidthPx / timelineWidth) * 100;\n" &
            "\n" &
            "            // Draw role periods\n" &
            "            states.forEach(state => {\n" &
@@ -426,7 +454,9 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "                        if (lastRole) {\n" &
            "                            // End previous role period\n" &
            "                            const duration = state.timeMs - lastTime;\n" &
-           "                            const width = (duration / currentMaxTime) * 100;\n" &
+           "                            let width = (duration / currentMaxTime) * 100;\n" &
+           "                            // Ensure minimum width for visibility\n" &
+           "                            width = Math.max(width, minWidthPercent);\n" &
            "                            const left = (lastTime / currentMaxTime) * 100;\n" &
            "\n" &
            "                            const roleDiv = document.createElement('div');\n" &
@@ -440,15 +470,26 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "                        lastTime = state.timeMs;\n" &
            "                    }\n" &
            "\n" &
-           "                    // Draw commit events\n" &
-           "                    if (node.commitIndex > 0) {\n" &
-           "                        const left = (state.timeMs / currentMaxTime) * 100;\n" &
-           "                        const commitDiv = document.createElement('div');\n" &
-           "                        commitDiv.className = 'event commit';\n" &
-           "                        commitDiv.style.left = `${left - 0.5}%`;\n" &
-           "                        commitDiv.style.width = '1%';\n" &
-           "                        commitDiv.title = `Commit ${node.commitIndex} at ${state.timeMs}ms`;\n" &
-           "                        timeline.appendChild(commitDiv);\n" &
+           "                    // Draw individual commit markers for each newly committed entry\n" &
+           "                    if (showCommits.checked && node.commitIndex > lastMarkedCommitIndex) {\n" &
+           "                        const newCommits = node.commitIndex - lastMarkedCommitIndex;\n" &
+           "                        // Space out markers slightly to avoid overlap\n" &
+           "                        const spacing = Math.min(0.5, 2.0 / newCommits); // Max 2% spacing between markers\n" &
+           "                        \n" &
+           "                        for (let i = 0; i < newCommits; i++) {\n" &
+           "                            const entryIndex = lastMarkedCommitIndex + i + 1;\n" &
+           "                            const offset = i * spacing;\n" &
+           "                            const left = (state.timeMs / currentMaxTime) * 100 + offset;\n" &
+           "                            \n" &
+           "                            const commitDiv = document.createElement('div');\n" &
+           "                            commitDiv.className = 'event commit';\n" &
+           "                            commitDiv.style.left = `${Math.max(left - 0.5, 0)}%`;\n" &
+           "                            // Ensure minimum width for commit events too\n" &
+           "                            commitDiv.style.width = `${Math.max(1, minWidthPercent)}%`;\n" &
+           "                            commitDiv.title = `Entry ${entryIndex} committed at ${state.timeMs}ms`;\n" &
+           "                            timeline.appendChild(commitDiv);\n" &
+           "                        }\n" &
+           "                        lastMarkedCommitIndex = node.commitIndex;\n" &
            "                    }\n" &
            "                }\n" &
            "            });\n" &
@@ -456,7 +497,9 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            // Draw final role period\n" &
            "            if (lastRole) {\n" &
            "                const duration = currentMaxTime - lastTime;\n" &
-           "                const width = (duration / currentMaxTime) * 100;\n" &
+           "                let width = (duration / currentMaxTime) * 100;\n" &
+           "                // Ensure minimum width for visibility\n" &
+           "                width = Math.max(width, minWidthPercent);\n" &
            "                const left = (lastTime / currentMaxTime) * 100;\n" &
            "\n" &
            "                const roleDiv = document.createElement('div');\n" &
@@ -492,12 +535,20 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            eventsList.innerHTML = '';\n" &
            "\n" &
            "            // Combine all events\n" &
-           "            const allEvents = [\n" &
+           "            let allEvents = [\n" &
            "                ...traceData.rpcEvents.map(e => ({...e, type: 'rpc'})),\n" &
            "                ...traceData.faultEvents.map(e => ({...e, type: 'fault'})),\n" &
            "                ...traceData.invariantViolations.map(e => ({...e, type: 'violation', description: e.description}))\n" &
-           "            ].filter(e => e.timeMs <= currentMaxTime)\n" &
-           "            .sort((a, b) => a.timeMs - b.timeMs);\n" &
+           "            ].filter(e => e.timeMs <= currentMaxTime);\n" &
+           "\n" &
+           "            // Apply event type filters\n" &
+           "            allEvents = allEvents.filter(e => {\n" &
+           "                if (e.type === 'violation' && !showViolations.checked) return false;\n" &
+           "                if (e.type === 'fault' && !showPartitions.checked) return false;\n" &
+           "                return true;\n" &
+           "            });\n" &
+           "\n" &
+           "            allEvents.sort((a, b) => a.timeMs - b.timeMs);\n" &
            "\n" &
            "            allEvents.forEach(event => {\n" &
            "                const item = document.createElement('div');\n" &
@@ -565,6 +616,18 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            generateTimeline();\n" &
            "            generateEventsList();\n" &
            "            generateMessageStatsList();\n" &
+           "        });\n" &
+           "\n" &
+           "        showCommits.addEventListener('change', function() {\n" &
+           "            generateTimeline();\n" &
+           "        });\n" &
+           "\n" &
+           "        showViolations.addEventListener('change', function() {\n" &
+           "            generateEventsList();\n" &
+           "        });\n" &
+           "\n" &
+           "        showPartitions.addEventListener('change', function() {\n" &
+           "            generateEventsList();\n" &
            "        });\n" &
            "\n" &
            "        // Initialize\n" &

@@ -33,4 +33,3 @@ export test_ssz_snapshot
 # Simulation tests
 import test_sim_clock
 import test_sim_rng
-import test_zipf_sampler

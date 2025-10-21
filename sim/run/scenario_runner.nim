@@ -22,6 +22,7 @@ import ../core/types
 import ../../src/raft/types
 import ../../src/raft/consensus_state_machine
 import ../report/json_writer
+import ../report/html_timeline
 import scenario_config
 
 type
@@ -260,6 +261,10 @@ proc run*(runner: ScenarioRunner): bool =
     runner.jsonWriter.finishTrace(runner.clock.nowMs, false, runner.clock.nowMs.int64, finalStats)
     runner.jsonWriter.writeToFile(runner.config.artifacts.json)
 
+    # Generate HTML timeline
+    let htmlGenerator = newHtmlTimelineGenerator(runner.jsonWriter.trace)
+    htmlGenerator.writeToFile(runner.config.artifacts.html)
+
     return false
   else:
     # Finalize trace with network statistics
@@ -274,6 +279,10 @@ proc run*(runner: ScenarioRunner): bool =
     }
     runner.jsonWriter.finishTrace(runner.clock.nowMs, true, runner.clock.nowMs.int64, finalStats)
     runner.jsonWriter.writeToFile(runner.config.artifacts.json)
+
+    # Generate HTML timeline
+    let htmlGenerator = newHtmlTimelineGenerator(runner.jsonWriter.trace)
+    htmlGenerator.writeToFile(runner.config.artifacts.html)
 
     return true
 

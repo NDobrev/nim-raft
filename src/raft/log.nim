@@ -136,8 +136,8 @@ func appendAsFollower*(rf: var RaftLog, entry: LogEntry) =
   if entry.index < rf.firstIndex:
     return
   if entry.index <= rf.lastIndex:
-    let existingEntryOpt = rf.getEntryByIndex(entry.index)
-    if existingEntryOpt.term == entry.term:
+    let existingEntry = rf.getEntryByIndex(entry.index)
+    if existingEntry.term == entry.term:
       # Entry already exists with the same term; skip
       return
     rf.truncateUncommitted(entry.index)
