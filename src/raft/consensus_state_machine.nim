@@ -704,14 +704,8 @@ func tickLeader*(sm: RaftStateMachineRef, now: times.DateTime) =
         sm.heartbeat(follower)
 
 func tick*(sm: RaftStateMachineRef, now: times.DateTime) =
-  sm.info "Term: " & $sm.term & " commit idx " & $sm.commitIndex &
-    " Time since last update: " & $(now - sm.timeNow).inMilliseconds &
-    "ms time until election:" &
-    $(sm.randomizedElectionTime - (sm.timeNow - sm.lastElectionTime)).inMilliseconds &
-    "ms"
   sm.timeNow = now
 
-  sm.debug "Time until election " & $(sm.randomizedElectionTime - (now - sm.lastElectionTime)).inMilliseconds & "ms"
   if sm.state.isLeader:
     sm.tickLeader(now)
   elif sm.timeNow - sm.lastElectionTime > sm.randomizedElectionTime:
