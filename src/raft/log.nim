@@ -32,7 +32,7 @@ type
     config*: RaftConfig
 
   RaftLog* = object
-    logEntries: seq[LogEntry]
+    logEntries*: seq[LogEntry]
     firstIndex*: RaftLogIndex
     lastConfigIndex*: RaftLogIndex
     prevConfigIndex*: RaftLogIndex
@@ -120,6 +120,8 @@ func getEntryByIndex*(rf: RaftLog, index: RaftLogIndex): LogEntry =
   rf.logEntries[index - rf.firstIndex]
 
 func append(rf: var RaftLog, entry: LogEntry) =
+  doAssert entry.index == rf.nextIndex,
+    fmt"invalid log index: got {entry.index}, expected {rf.nextIndex}"
   rf.logEntries.add(entry)
   if entry.kind == rletConfig:
     rf.prevConfigIndex = rf.lastConfigIndex
@@ -136,8 +138,8 @@ func appendAsFollower*(rf: var RaftLog, entry: LogEntry) =
   if entry.index < rf.firstIndex:
     return
   if entry.index <= rf.lastIndex:
-    let existingEntryOpt = rf.getEntryByIndex(entry.index)
-    if existingEntryOpt.term == entry.term:
+    let existingEntry = rf.getEntryByIndex(entry.index)
+    if existingEntry.term == entry.term:
       # Entry already exists with the same term; skip
       return
     rf.truncateUncommitted(entry.index)

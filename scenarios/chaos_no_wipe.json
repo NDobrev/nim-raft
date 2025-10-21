@@ -1,0 +1,72 @@
+{
+  "seed": 777,
+  "cluster": {
+    "nodes": 5,
+    "election_timeout_ms": {
+      "min": 150,
+      "max": 300
+    },
+    "heartbeat_ms": 50
+  },
+  "storage": {
+    "durability": "Durable",
+    "snapshot": {
+      "enabled": true,
+      "max_log_entries": 100,
+      "or_bytes": 2097152,
+      "snapshot_each_ms": 100
+    }
+  },
+  "workload": {
+    "type": "kv",
+    "rate": {
+      "propose_per_tick": 0.02
+    },
+    "mix": {
+      "put": 80,
+      "get": 20
+    },
+    "keys": {
+      "space": 2000,
+      "zipf_s": 1.1
+    }
+  },
+  "net": {
+    "latency_ms": {
+      "base": 20,
+      "jitter": 10,
+      "p99": 120
+    },
+    "drop_pct": 1.5,
+    "dup_pct": 0.5,
+    "reorder_window": 5
+  },
+  "partitions": [],
+  "node_lifecycle": {
+    "restart_policies": [
+      {
+        "selector": "any",
+        "period_ms": 4000,
+        "stop_duration_ms": {
+          "min": 200,
+          "max": 1200
+        },
+        "probability_per_period_pct": 35,
+        "wipe_db_probability_pct": 0
+      }
+    ]
+  },
+  "fuzz": {
+    "enabled": false,
+    "knobs": {}
+  },
+  "stop": {
+    "max_ms": 2000000,
+    "min_commits": 15000,
+    "fail_fast": true
+  },
+  "artifacts": {
+    "html": "artifacts/chaos_no_wipe.html",
+    "json": "artifacts/chaos_no_wipe.json"
+  }
+}

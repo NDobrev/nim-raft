@@ -1,0 +1,72 @@
+{
+  "seed": 98765,
+  "cluster": {
+    "nodes": 3,
+    "election_timeout_ms": {
+      "min": 150,
+      "max": 300
+    },
+    "heartbeat_ms": 50
+  },
+  "storage": {
+    "durability": "Durable",
+    "snapshot": {
+      "enabled": true,
+      "max_log_entries": 500,
+      "or_bytes": 2097152,
+      "snapshot_each_ms": 500
+    }
+  },
+  "workload": {
+    "type": "kv",
+    "rate": {
+      "propose_per_tick": 0.04
+    },
+    "mix": {
+      "put": 80,
+      "get": 20
+    },
+    "keys": {
+      "space": 1000,
+      "zipf_s": 1.1
+    }
+  },
+  "net": {
+    "latency_ms": {
+      "base": 20,
+      "jitter": 10,
+      "p99": 120
+    },
+    "drop_pct": 2.0,
+    "dup_pct": 1.0,
+    "reorder_window": 5
+  },
+  "partitions": [],
+  "node_lifecycle": {
+    "restart_policies": [
+      {
+        "selector": "any",
+        "period_ms": 4000,
+        "stop_duration_ms": {
+          "min": 50,
+          "max": 400
+        },
+        "probability_per_period_pct": 40.0,
+        "wipe_db_probability_pct": 15.0
+      }
+    ]
+  },
+  "fuzz": {
+    "enabled": false,
+    "knobs": {}
+  },
+  "stop": {
+    "max_ms": 360000,
+    "min_commits": 3000,
+    "fail_fast": false
+  },
+  "artifacts": {
+    "html": "artifacts/restart_and_wipe.html",
+    "json": "artifacts/restart_and_wipe.json"
+  }
+}

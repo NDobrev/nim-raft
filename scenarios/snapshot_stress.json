@@ -1,0 +1,82 @@
+{
+  "seed": 24680,
+  "cluster": {
+    "nodes": 3,
+    "election_timeout_ms": {
+      "min": 150,
+      "max": 300
+    },
+    "heartbeat_ms": 50
+  },
+  "storage": {
+    "durability": "Durable",
+    "snapshot": {
+      "enabled": true,
+      "max_log_entries": 100,
+      "or_bytes": 1048576,
+      "snapshot_each_ms": 200
+    }
+  },
+  "workload": {
+    "type": "kv",
+    "rate": {
+      "propose_per_tick": 0.8
+    },
+    "mix": {
+      "put": 95,
+      "get": 5
+    },
+    "keys": {
+      "space": 2000,
+      "zipf_s": 1.1
+    }
+  },
+  "net": {
+    "latency_ms": {
+      "base": 20,
+      "jitter": 10,
+      "p99": 120
+    },
+    "drop_pct": 1.0,
+    "dup_pct": 0.5,
+    "reorder_window": 3
+  },
+  "partitions": [],
+  "node_lifecycle": {
+    "restart_policies": [
+      {
+        "selector": "node:1",
+        "period_ms": 8000,
+        "stop_duration_ms": {
+          "min": 200,
+          "max": 500
+        },
+        "probability_per_period_pct": 60.0,
+        "wipe_db_probability_pct": 10.0
+      },
+      {
+        "selector": "node:2",
+        "period_ms": 12000,
+        "stop_duration_ms": {
+          "min": 300,
+          "max": 600
+        },
+        "probability_per_period_pct": 50.0,
+        "wipe_db_probability_pct": 20.0
+      }
+    ]
+  },
+  "fuzz": {
+    "enabled": false,
+    "knobs": {}
+  },
+  "stop": {
+    "max_ms": 45000,
+    "min_commits": 5000,
+    "fail_fast": false
+  },
+  "artifacts": {
+    "html": "artifacts/snapshot_stress.html",
+    "json": "artifacts/snapshot_stress.json"
+  }
+}

@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raft Simulation Timeline - Seed 42</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .metric {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        .metric .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2563eb;
+        }
+
+        .metric .label {
+            font-size: 14px;
+            color: #6b7280;
+            margin-top: 5px;
+        }
+
+        .timeline {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+            width: 100%;
+        }
+
+        .timeline-header {
+            padding: 15px 20px;
+            background: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .control-group label {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        input[type="range"] {
+            width: 100px;
+        }
+
+        .timeline-canvas {
+            position: relative;
+            height: 400px;
+            width: 100%;
+            background: #ffffff;
+        }
+
+        .node-track {
+            position: absolute;
+            height: 60px;
+            left: 0;
+            right: 0;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+        }
+
+        .node-label {
+            width: 80px;
+            padding: 0 10px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        .node-timeline {
+            flex: 1;
+            position: relative;
+            height: 100%;
+            min-width: 100px; /* Ensure minimum width for timeline */
+        }
+
+        .time-marker {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #e2e8f0;
+        }
+
+        .event {
+            position: absolute;
+            height: 40px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 500;
+            color: white;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .event:hover {
+            opacity: 0.8;
+        }
+
+        .leader {
+            background: #059669;
+            z-index: 1;
+        }
+
+        .candidate {
+            background: #d97706;
+            z-index: 1;
+        }
+
+        .follower {
+            background: #6b7280;
+            z-index: 1;
+        }
+
+        .commit {
+            background: #2563eb;
+            height: 20px;
+            border-radius: 2px;
+            z-index: 10;
+        }
+
+        .violation {
+            background: #dc2626;
+            height: 20px;
+            border-radius: 2px;
+            z-index: 10;
+        }
+
+        .partition {
+            background: #7c3aed;
+            height: 20px;
+            border-radius: 2px;
+            z-index: 10;
+        }
+
+        .restart {
+            background: #db2777;
+            height: 20px;
+            border-radius: 2px;
+            z-index: 10;
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            padding: 15px 20px;
+            background: #f8fafc;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 14px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+        }
+
+        .events-panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-top: 20px;
+            overflow: hidden;
+        }
+
+        .events-header {
+            padding: 15px 20px;
+            background: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+            font-weight: 600;
+        }
+
+        .events-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .event-item {
+            padding: 10px 20px;
+            border-bottom: 1px solid #f1f5f9;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .event-item:hover {
+            background: #f8fafc;
+        }
+
+        .event-time {
+            font-weight: 500;
+            color: #2563eb;
+        }
+
+        .event-type {
+            font-size: 12px;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .event-desc {
+            margin-top: 2px;
+            color: #374151;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Raft Simulation Timeline</h1>
+        <div class="summary">
+            <div class="metric">
+                <div class="value">10017ms</div>
+                <div class="label">Total Time</div>
+            </div>
+            <div class="metric">
+                <div class="value">772</div>
+                <div class="label">Total Messages</div>
+            </div>
+            <div class="metric">
+                <div class="value">772</div>
+                <div class="label">Delivered</div>
+            </div>
+            <div class="metric">
+                <div class="value">0</div>
+                <div class="label">Dropped</div>
+            </div>
+            <div class="metric">
+                <div class="value">772</div>
+                <div class="label">RPC Events</div>
+            </div>
+            <div class="metric">
+                <div class="value">0</div>
+                <div class="label">Violations</div>
+            </div>
+            <div class="metric">
+                <div class="value">✓</div>
+                <div class="label">Success</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="timeline">
+        <div class="timeline-header">
+            <div class="controls">
+                <div class="control-group">
+                    <label for="timeRange">Time Range:</label>
+                    <input type="range" id="timeRange" min="1" max="10017" value="10017">
+                    <span id="timeDisplay">10017ms</span>
+                </div>
+                <div class="control-group">
+                    <label for="showEvents">Show Events:</label>
+                    <input type="checkbox" id="showCommits" checked> Commits
+                    <input type="checkbox" id="showViolations" checked> Violations
+                    <input type="checkbox" id="showPartitions" checked> Partitions
+                </div>
+            </div>
+        </div>
+
+        <div class="timeline-canvas" id="timelineCanvas">
+            <!-- Timeline content will be generated by JavaScript -->
+        </div>
+
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #059669;"></div>
+                <span>Leader</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #d97706;"></div>
+                <span>Candidate</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #6b7280;"></div>
+                <span>Follower</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #2563eb;"></div>
+                <span>Commits</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #dc2626;"></div>
+                <span>Violations</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #7c3aed;"></div>
+                <span>Partitions</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="events-panel">
+        <div class="events-header">Events Timeline</div>
+        <div class="events-list" id="eventsList">
+            <!-- Events will be populated by JavaScript -->
+        </div>
+    </div>
+
+    <div class="events-panel">
+        <div class="events-header">Message Statistics</div>
+        <div class="events-list" id="messageStatsList">
+            <!-- Message stats will be populated by JavaScript -->
+        </div>
+    </div>
+
+    <script>
+        // Simulation data
+        const traceData = {"schemaVersion":"1.0","config":{"seed":42,"cluster":{"nodes":3,"election_timeout_ms":{"min":150,"max":300},"heartbeat_ms":50},"storage":{"durability":"Durable","snapshot":{"enabled":false,"max_log_entries":null,"or_bytes":null}},"workload":{"type":"kv","rate":{"propose_per_tick":1.0},"mix":{"put":90,"get":10},"keys":{"space":1000,"zipf_s":1.1}},"net":{"latency_ms":{"base":20,"jitter":10,"p99":120},"drop_pct":2.0,"dup_pct":1.0,"reorder_window":5},"partitions":[],"node_lifecycle":{"restart_policies":[]},"fuzz":{"enabled":false,"knobs":{}},"stop":{"max_ms":10000,"min_commits":1000,"fail_fast":false},"artifacts":{"html":"artifacts/happy_3node.html","json":"artifacts/happy_3node.json"},"invariants":null},"seed":42,"startTime":0,"endTime":10017,"success":true,"totalTicks":10017,"clusterStates":[{"timeMs":100,"nodes":[{"id":0,"role":"follower","currentTerm":0,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":0,"nextIndex":[],"matchIndex":[]},{"id":1,"role":"follower","currentTerm":0,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":0,"nextIndex":[],"matchIndex":[]},{"id":2,"role":"follower","currentTerm":0,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":0,"nextIndex":[],"matchIndex":[]}],"leaderId":null,"totalCommits":0,"invariantsOk":true},{"timeMs":200,"nodes":[{"id":0,"role":"follower","currentTerm":0,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":0,"nextIndex":[],"matchIndex":[]},{"id":1,"role":"follower","currentTerm":0,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":0,"nextIndex":[],"matchIndex":[]},{"id":2,"role":"follower","currentTerm":0,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":0,"nextIndex":[],"matchIndex":[]}],"leaderId":null,"totalCommits":0,"invariantsOk":true},{"timeMs":1500,"nodes":[{"id":0,"role":"leader","currentTerm":2,"votedFor":0,"commitIndex":1,"lastApplied":1,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":1,"role":"follower","currentTerm":2,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":2,"role":"follower","currentTerm":2,"votedFor":0,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]}],"leaderId":0,"totalCommits":0,"invariantsOk":true},{"timeMs":4000,"nodes":[{"id":0,"role":"leader","currentTerm":2,"votedFor":0,"commitIndex":1,"lastApplied":1,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":1,"role":"follower","currentTerm":2,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":2,"role":"follower","currentTerm":2,"votedFor":0,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]}],"leaderId":0,"totalCommits":1,"invariantsOk":true},{"timeMs":5300,"nodes":[{"id":0,"role":"leader","currentTerm":2,"votedFor":0,"commitIndex":1,"lastApplied":1,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":1,"role":"follower","currentTerm":2,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":2,"role":"follower","currentTerm":2,"votedFor":0,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]}],"leaderId":0,"totalCommits":1,"invariantsOk":true},{"timeMs":6600,"nodes":[{"id":0,"role":"leader","currentTerm":2,"votedFor":0,"commitIndex":1,"lastApplied":1,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":1,"role":"follower","currentTerm":2,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":2,"role":"follower","currentTerm":2,"votedFor":0,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]}],"leaderId":0,"totalCommits":1,"invariantsOk":true},{"timeMs":9100,"nodes":[{"id":0,"role":"leader","currentTerm":2,"votedFor":0,"commitIndex":1,"lastApplied":1,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":1,"role":"follower","currentTerm":2,"votedFor":null,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]},{"id":2,"role":"follower","currentTerm":2,"votedFor":0,"commitIndex":0,"lastApplied":0,"logLen":1,"nextIndex":[],"matchIndex":[]}],"leaderId":0,"totalCommits":1,"invariantsOk":true}],"rpcEvents":[{"timeMs":202,"fromNode":1,"toNode":0,"rpcType":"RequestVote","term":1,"success":null,"details":{}},{"timeMs":202,"fromNode":1,"toNode":2,"rpcType":"RequestVote","term":1,"success":null,"details":{}},{"timeMs":227,"fromNode":0,"toNode":1,"rpcType":"RequestVoteReply","term":1,"success":null,"details":{}},{"timeMs":227,"fromNode":0,"toNode":1,"rpcType":"RequestVote","term":2,"success":null,"details":{}},{"timeMs":227,"fromNode":0,"toNode":2,"rpcType":"RequestVote","term":2,"success":null,"details":{}},{"timeMs":227,"fromNode":2,"toNode":1,"rpcType":"RequestVoteReply","term":1,"success":null,"details":{}},{"timeMs":252,"fromNode":1,"toNode":0,"rpcType":"RequestVoteReply","term":2,"success":null,"details":{}},{"timeMs":252,"fromNode":2,"toNode":0,"rpcType":"RequestVoteReply","term":2,"success":null,"details":{}},{"timeMs":277,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":277,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":302,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":302,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":328,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":328,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":353,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":353,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":379,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":379,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":404,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":404,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":430,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":430,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":455,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":455,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":481,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":481,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":506,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":506,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":532,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":532,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":557,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":557,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":583,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":583,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":608,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":608,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":634,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":634,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":659,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":659,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":685,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":685,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":710,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":710,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":736,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":736,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":761,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":761,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":787,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":787,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":812,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":812,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":838,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":838,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":863,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":863,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":889,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":889,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":914,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":914,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":940,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":940,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":965,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":965,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":991,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":991,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1016,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1016,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1042,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1042,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1067,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1067,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1093,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1093,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1118,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1118,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1144,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1144,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1169,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1169,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1195,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1195,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1220,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1220,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1246,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1246,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1271,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1271,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1297,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1297,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1322,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1322,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1348,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1348,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1373,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1373,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1399,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1399,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1424,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1424,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1450,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1450,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1475,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1475,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1501,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1501,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1526,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1526,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1552,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1552,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1577,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1577,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1603,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1603,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1628,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1628,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1654,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1654,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1679,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1679,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1705,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1705,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1730,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1730,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1756,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1756,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1781,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1781,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1807,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1807,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1832,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1832,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1858,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1858,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1883,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1883,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1909,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1909,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1934,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1934,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1960,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1960,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":1985,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":1985,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2011,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2011,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2036,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2036,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2062,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2062,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2087,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2087,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2113,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2113,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2138,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2138,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2164,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2164,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2189,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2189,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2215,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2215,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2240,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2240,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2266,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2266,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2291,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2291,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2317,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2317,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2342,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2342,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2368,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2368,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2393,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2393,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2419,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2419,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2444,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2444,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2470,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2470,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2495,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2495,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2521,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2521,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2546,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2546,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2572,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2572,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2597,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2597,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2623,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2623,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2648,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2648,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2674,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2674,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2699,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2699,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2725,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2725,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2750,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2750,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2776,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2776,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2801,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2801,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2827,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2827,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2852,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2852,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2878,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2878,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2903,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2903,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2929,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2929,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2954,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2954,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":2980,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":2980,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3005,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3005,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3031,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3031,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3056,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3056,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3082,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3082,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3107,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3107,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3133,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3133,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3158,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3158,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3184,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3184,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3209,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3209,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3235,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3235,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3260,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3260,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3286,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3286,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3311,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3311,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3337,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3337,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3362,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3362,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3388,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3388,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3413,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3413,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3439,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3439,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3464,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3464,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3490,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3490,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3515,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3515,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3541,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3541,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3566,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3566,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3592,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3592,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3617,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3617,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3643,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3643,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3668,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3668,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3694,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3694,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3719,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3719,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3745,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3745,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3770,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3770,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3796,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3796,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3821,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3821,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3847,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3847,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3872,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3872,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3898,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3898,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3923,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3923,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3949,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3949,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":3974,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":3974,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4000,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4000,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4025,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4025,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4051,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4051,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4076,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4076,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4102,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4102,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4127,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4127,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4153,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4153,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4178,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4178,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4204,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4204,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4229,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4229,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4255,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4255,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4280,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4280,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4306,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4306,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4331,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4331,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4357,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4357,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4382,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4382,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4408,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4408,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4433,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4433,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4459,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4459,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4484,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4484,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4510,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4510,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4535,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4535,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4561,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4561,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4586,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4586,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4612,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4612,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4637,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4637,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4663,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4663,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4688,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4688,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4714,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4714,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4739,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4739,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4765,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4765,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4790,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4790,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4816,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4816,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4841,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4841,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4867,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4867,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4892,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4892,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4918,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4918,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4943,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4943,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4969,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4969,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":4994,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":4994,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5020,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5020,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5045,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5045,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5071,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5071,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5096,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5096,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5122,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5122,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5147,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5147,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5173,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5173,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5198,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5198,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5224,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5224,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5249,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5249,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5275,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5275,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5300,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5300,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5326,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5326,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5351,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5351,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5377,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5377,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5402,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5402,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5428,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5428,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5453,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5453,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5479,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5479,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5504,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5504,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5530,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5530,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5555,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5555,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5581,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5581,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5606,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5606,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5632,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5632,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5657,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5657,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5683,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5683,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5708,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5708,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5734,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5734,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5759,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5759,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5785,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5785,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5810,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5810,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5836,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5836,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5861,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5861,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5887,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5887,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5912,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5912,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5938,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5938,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5963,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5963,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":5989,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":5989,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6014,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6014,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6040,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6040,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6065,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6065,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6091,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6091,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6116,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6116,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6142,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6142,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6167,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6167,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6193,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6193,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6218,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6218,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6244,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6244,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6269,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6269,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6295,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6295,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6320,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6320,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6346,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6346,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6371,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6371,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6397,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6397,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6422,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6422,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6448,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6448,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6473,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6473,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6499,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6499,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6524,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6524,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6550,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6550,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6575,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6575,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6601,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6601,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6626,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6626,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6652,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6652,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6677,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6677,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6703,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6703,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6728,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6728,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6754,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6754,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6779,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6779,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6805,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6805,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6830,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6830,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6856,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6856,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6881,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6881,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6907,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6907,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6932,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6932,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6958,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6958,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":6983,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":6983,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7009,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7009,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7034,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7034,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7060,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7060,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7085,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7085,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7111,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7111,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7136,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7136,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7162,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7162,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7187,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7187,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7213,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7213,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7238,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7238,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7264,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7264,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7289,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7289,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7315,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7315,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7340,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7340,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7366,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7366,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7391,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7391,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7417,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7417,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7442,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7442,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7468,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7468,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7493,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7493,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7519,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7519,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7544,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7544,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7570,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7570,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7595,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7595,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7621,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7621,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7646,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7646,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7672,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7672,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7697,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7697,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7723,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7723,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7748,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7748,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7774,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7774,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7799,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7799,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7825,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7825,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7850,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7850,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7876,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7876,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7901,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7901,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7927,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7927,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7952,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7952,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":7978,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":7978,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8003,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8003,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8029,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8029,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8054,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8054,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8080,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8080,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8105,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8105,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8131,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8131,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8156,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8156,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8182,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8182,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8207,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8207,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8233,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8233,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8258,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8258,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8284,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8284,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8309,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8309,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8335,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8335,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8360,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8360,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8386,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8386,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8411,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8411,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8437,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8437,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8462,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8462,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8488,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8488,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8513,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8513,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8539,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8539,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8564,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8564,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8590,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8590,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8615,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8615,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8641,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8641,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8666,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8666,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8692,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8692,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8717,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8717,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8743,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8743,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8768,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8768,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8794,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8794,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8819,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8819,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8845,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8845,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8870,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8870,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8896,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8896,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8921,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8921,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8947,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8947,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8972,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8972,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":8998,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":8998,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9023,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9023,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9049,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9049,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9074,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9074,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9100,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9100,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9125,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9125,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9151,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9151,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9176,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9176,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9202,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9202,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9227,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9227,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9253,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9253,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9278,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9278,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9304,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9304,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9329,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9329,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9355,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9355,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9380,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9380,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9406,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9406,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9431,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9431,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9457,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9457,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9482,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9482,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9508,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9508,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9533,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9533,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9559,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9559,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9584,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9584,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9610,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9610,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9635,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9635,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9661,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9661,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9686,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9686,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9712,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9712,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9737,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9737,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9763,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9763,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9788,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9788,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9814,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9814,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9839,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9839,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9865,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9865,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9890,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9890,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9916,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9916,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9941,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9941,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9967,"fromNode":0,"toNode":1,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9967,"fromNode":0,"toNode":2,"rpcType":"AppendEntries","term":2,"success":null,"details":{}},{"timeMs":9992,"fromNode":1,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}},{"timeMs":9992,"fromNode":2,"toNode":0,"rpcType":"AppendEntriesReply","term":2,"success":null,"details":{}}],"faultEvents":[],"invariantViolations":[],"messageStats":{"totalMessages":772,"messagesByType":{"RequestVote":4,"AppendEntriesReply":382,"AppendEntries":382,"RequestVoteReply":4},"messagesByNode":{"1":{"2":1,"0":193},"2":{"1":1,"0":192},"0":{"1":193,"2":192}},"networkStats":{"dropped":0,"duplicated":0,"delivered":772},"avgLatencyMs":0.0,"minLatencyMs":9223372036854775807,"maxLatencyMs":0},"finalStats":{"networkStats":{"dropped":0,"duplicated":0,"delivered":772},"totalCommits":1}};
+
+        // DOM elements
+        const canvas = document.getElementById('timelineCanvas');
+        const eventsList = document.getElementById('eventsList');
+        const messageStatsList = document.getElementById('messageStatsList');
+        const timeRange = document.getElementById('timeRange');
+        const timeDisplay = document.getElementById('timeDisplay');
+        const showCommits = document.getElementById('showCommits');
+        const showViolations = document.getElementById('showViolations');
+        const showPartitions = document.getElementById('showPartitions');
+
+        let maxTime = traceData.totalTicks;
+        let currentMaxTime = maxTime;
+
+        // Generate timeline visualization
+        function generateTimeline() {
+            canvas.innerHTML = '';
+
+            // Calculate node tracks
+            const nodeCount = traceData.config.cluster.nodes;
+            const trackHeight = 60;
+
+            for (let nodeId = 0; nodeId < nodeCount; nodeId++) {
+                const track = document.createElement('div');
+                track.className = 'node-track';
+                track.style.top = `${nodeId * trackHeight}px`;
+
+                const label = document.createElement('div');
+                label.className = 'node-label';
+                label.textContent = `Node ${nodeId}`;
+                track.appendChild(label);
+
+                const timeline = document.createElement('div');
+                timeline.className = 'node-timeline';
+                track.appendChild(timeline);
+
+                canvas.appendChild(track);
+
+                // Draw role changes and events
+                drawNodeTimeline(nodeId, timeline);
+            }
+
+            // Draw time markers
+            drawTimeMarkers();
+        }
+
+        function drawNodeTimeline(nodeId, timeline) {
+            // Handle edge case where currentMaxTime is 0
+            if (currentMaxTime <= 0) {
+                return;
+            }
+
+            const states = traceData.clusterStates.filter(s => s.timeMs <= currentMaxTime);
+            let lastRole = null;
+            let lastTime = 0;
+            let lastMarkedCommitIndex = 0;
+
+            // Minimum width to ensure visibility (in pixels)
+            const minWidthPx = 2;
+            const canvas = document.getElementById('timelineCanvas');
+            const canvasWidth = canvas.offsetWidth || Math.max(window.innerWidth - 100, 600);
+            const timelineWidth = canvasWidth - 80; // subtract label width
+            const minWidthPercent = (minWidthPx / timelineWidth) * 100;
+
+            // Draw role periods
+            states.forEach(state => {
+                const node = state.nodes[nodeId];
+                if (node) {
+                    if (lastRole !== node.role) {
+                        if (lastRole) {
+                            // End previous role period
+                            const duration = state.timeMs - lastTime;
+                            let width = (duration / currentMaxTime) * 100;
+                            // Ensure minimum width for visibility
+                            width = Math.max(width, minWidthPercent);
+                            const left = (lastTime / currentMaxTime) * 100;
+
+                            const roleDiv = document.createElement('div');
+                            roleDiv.className = `event ${lastRole}`;
+                            roleDiv.style.left = `${left}%`;
+                            roleDiv.style.width = `${width}%`;
+                            roleDiv.title = `${lastRole} (${lastTime}-${state.timeMs}ms)`;
+                            timeline.appendChild(roleDiv);
+                        }
+                        lastRole = node.role;
+                        lastTime = state.timeMs;
+                    }
+
+                    // Draw individual commit markers for each newly committed entry
+                    if (showCommits.checked && node.commitIndex > lastMarkedCommitIndex) {
+                        const newCommits = node.commitIndex - lastMarkedCommitIndex;
+                        // Space out markers slightly to avoid overlap
+                        const spacing = Math.min(0.5, 2.0 / newCommits); // Max 2% spacing between markers
+                        
+                        for (let i = 0; i < newCommits; i++) {
+                            const entryIndex = lastMarkedCommitIndex + i + 1;
+                            const offset = i * spacing;
+                            const left = (state.timeMs / currentMaxTime) * 100 + offset;
+                            
+                            const commitDiv = document.createElement('div');
+                            commitDiv.className = 'event commit';
+                            commitDiv.style.left = `${Math.max(left - 0.5, 0)}%`;
+                            // Ensure minimum width for commit events too
+                            commitDiv.style.width = `${Math.max(1, minWidthPercent)}%`;
+                            commitDiv.title = `Entry ${entryIndex} committed at ${state.timeMs}ms`;
+                            timeline.appendChild(commitDiv);
+                        }
+                        lastMarkedCommitIndex = node.commitIndex;
+                    }
+                }
+            });
+
+            // Draw final role period
+            if (lastRole) {
+                const duration = currentMaxTime - lastTime;
+                let width = (duration / currentMaxTime) * 100;
+                // Ensure minimum width for visibility
+                width = Math.max(width, minWidthPercent);
+                const left = (lastTime / currentMaxTime) * 100;
+
+                const roleDiv = document.createElement('div');
+                roleDiv.className = `event ${lastRole}`;
+                roleDiv.style.left = `${left}%`;
+                roleDiv.style.width = `${width}%`;
+                roleDiv.title = `${lastRole} (${lastTime}-${currentMaxTime}ms)`;
+                timeline.appendChild(roleDiv);
+            }
+        }
+
+        function drawTimeMarkers() {
+            const markers = [0, currentMaxTime * 0.25, currentMaxTime * 0.5, currentMaxTime * 0.75, currentMaxTime];
+            markers.forEach(time => {
+                const marker = document.createElement('div');
+                marker.className = 'time-marker';
+                marker.style.left = `${(time / currentMaxTime) * 100}%`;
+
+                const label = document.createElement('div');
+                label.style.position = 'absolute';
+                label.style.top = '-20px';
+                label.style.left = '5px';
+                label.style.fontSize = '12px';
+                label.style.color = '#6b7280';
+                label.textContent = `${time}ms`;
+                marker.appendChild(label);
+
+                canvas.appendChild(marker);
+            });
+        }
+
+        function generateEventsList() {
+            eventsList.innerHTML = '';
+
+            // Combine all events
+            let allEvents = [
+                ...traceData.rpcEvents.map(e => ({...e, type: 'rpc'})),
+                ...traceData.faultEvents.map(e => ({...e, type: 'fault'})),
+                ...traceData.invariantViolations.map(e => ({...e, type: 'violation', description: e.description}))
+            ].filter(e => e.timeMs <= currentMaxTime);
+
+            // Apply event type filters
+            allEvents = allEvents.filter(e => {
+                if (e.type === 'violation' && !showViolations.checked) return false;
+                if (e.type === 'fault' && !showPartitions.checked) return false;
+                return true;
+            });
+
+            allEvents.sort((a, b) => a.timeMs - b.timeMs);
+
+            allEvents.forEach(event => {
+                const item = document.createElement('div');
+                item.className = 'event-item';
+
+                item.innerHTML = `
+                    <div class="event-time">${event.timeMs}ms</div>
+                    <div class="event-type">${event.type}</div>
+                    <div class="event-desc">${getEventDescription(event)}</div>
+                `;
+
+                eventsList.appendChild(item);
+            });
+        }
+
+        function getEventDescription(event) {
+            switch (event.type) {
+                case 'rpc':
+                    return `${event.rpcType} from ${(event.fromNode || 0)} to ${(event.toNode || 0)}`;
+                case 'fault':
+                    return event.faultType;
+                case 'violation':
+                    return event.description;
+                default:
+                    return 'Unknown event';
+            }
+        }
+
+        function generateMessageStatsList() {
+            messageStatsList.innerHTML = '';
+
+            // Message type statistics
+            const messageStats = traceData.messageStats;
+            const totalMessages = messageStats.totalMessages;
+
+            // Network stats
+            const networkStats = messageStats.networkStats;
+            const item1 = document.createElement('div');
+            item1.className = 'event-item';
+            item1.innerHTML = `
+                <div class="event-type">Network</div>
+                <div class="event-desc">Delivered: ${networkStats.delivered || 0}, Dropped: ${networkStats.dropped || 0}, Duplicated: ${networkStats.duplicated || 0}</div>
+            `;
+            messageStatsList.appendChild(item1);
+
+            // Message type breakdown
+            if (messageStats.messagesByType) {
+                Object.entries(messageStats.messagesByType).forEach(([type, count]) => {
+                    const percentage = totalMessages > 0 ? ((count / totalMessages) * 100).toFixed(1) : '0.0';
+                    const item = document.createElement('div');
+                    item.className = 'event-item';
+                    item.innerHTML = `
+                        <div class="event-type">${type}</div>
+                        <div class="event-desc">${count} messages (${percentage}%)</div>
+                    `;
+                    messageStatsList.appendChild(item);
+                });
+            }
+        }
+
+        // Event handlers
+        timeRange.addEventListener('input', function() {
+            currentMaxTime = parseInt(this.value);
+            timeDisplay.textContent = currentMaxTime + 'ms';
+            generateTimeline();
+            generateEventsList();
+            generateMessageStatsList();
+        });
+
+        showCommits.addEventListener('change', function() {
+            generateTimeline();
+        });
+
+        showViolations.addEventListener('change', function() {
+            generateEventsList();
+        });
+
+        showPartitions.addEventListener('change', function() {
+            generateEventsList();
+        });
+
+        // Initialize
+        generateTimeline();
+        generateEventsList();
+        generateMessageStatsList();
+    </script>
+</body>
+</html>

@@ -360,7 +360,6 @@ suite "BLS consensus tests":
       if cluster.getLeader().isSome():
         if cluster.getLeader().get.us.lastcommittedMsg.fieldInt == 42:
           committed = true
-          #break
     check committed
   test "Raft rpc binary serialization":
     block:

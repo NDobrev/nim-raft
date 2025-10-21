@@ -7,6 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
+import std/unittest
 
 import test_consensus_state_machine
 import test_log
@@ -28,3 +29,7 @@ export test_ssz_requestvote
 export test_ssz_appendentries_basic
 export test_ssz_appendentries_many
 export test_ssz_snapshot
+
+# Simulation tests
+import test_sim_clock
+import test_sim_rng

@@ -47,6 +47,78 @@ messages to gather information about the process, collect signatures for uncommi
 
 Since this approach doesn't introduce any new messages in the Raft protocol, but merely adds additional data to each message, it retains the round-trip efficiency of the base algorithm.
 
+## Raft Simulation Framework
+
+This repository includes a comprehensive simulation and testing framework for the Raft consensus algorithm. The framework allows you to:
+
+- Test Raft implementations under various failure scenarios
+- Inject network faults (latency, drops, partitions)
+- Simulate storage failures and durability modes
+- Verify safety and liveness properties
+- Run deterministic, reproducible simulations
+
+### Quick Start
+
+```bash
+# Run unit tests
+make test
+
+# Build and run a basic simulation
+make sim
+
+# Run a quick simulation (1 second)
+make sim-quick
+
+# Get help on available commands
+make help
+```
+
+### Available Commands
+
+- `make help` - Show all available commands
+- `make build` - Build the simulation executable
+- `make test` - Run unit tests
+- `make sim` - Run default simulation (happy 3-node scenario)
+- `make sim-quick` - Run very quick simulation for testing
+- `make sim-happy-long` - Run longer happy scenario
+- `make sim-custom` - Run with custom parameters
+- `make clean` - Clean build artifacts
+- `make info` - Show project information
+
+### Custom Simulations
+
+You can run simulations with custom parameters:
+
+```bash
+# Using make variables
+make sim-custom SCENARIO=scenarios/happy_3node.yaml SEED=123 MAX_TIME=5000
+
+# Or set environment variables
+export SCENARIO=scenarios/happy_3node.yaml
+export SEED=123
+export MAX_TIME=5000
+make sim-custom
+```
+
+### Architecture
+
+The simulation framework consists of:
+
+- **Core Components**: Deterministic clock, RNG, event scheduling
+- **Network Simulation**: Fault injection, partitions, message delays
+- **Storage Simulation**: Durability modes (Durable/Async/Torn), crash recovery
+- **Raft Interface**: Pluggable Raft implementations via abstract interface
+- **Invariant Checking**: Automatic verification of Raft safety properties
+
+### Integration
+
+To integrate your Raft implementation with the simulation framework:
+
+1. Implement the `RaftNode` interface defined in `sim/raft/raft_interface.nim`
+2. Create a `NodeHost` with your Raft implementation
+3. Run simulations to test under various failure scenarios
+
+
 ## Contributing
 
 ### Style Guide

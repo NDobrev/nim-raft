@@ -1,0 +1,65 @@
+{
+  "seed": 13579,
+  "cluster": {
+    "nodes": 5,
+    "election_timeout_ms": {
+      "min": 150,
+      "max": 300
+    },
+    "heartbeat_ms": 50
+  },
+  "storage": {
+    "durability": "Durable",
+    "snapshot": {
+      "enabled": true,
+      "max_log_entries": 300,
+      "or_bytes": 2097152,
+      "snapshot_each_ms": 500
+    }
+  },
+  "workload": {
+    "type": "kv",
+    "rate": {
+      "propose_per_tick": 0.5
+    },
+    "mix": {
+      "put": 80,
+      "get": 20
+    },
+    "keys": {
+      "space": 1000,
+      "zipf_s": 1.1
+    }
+  },
+  "net": {
+    "latency_ms": {
+      "base": 20,
+      "jitter": 10,
+      "p99": 120
+    },
+    "drop_pct": 2.0,
+    "dup_pct": 1.0,
+    "reorder_window": 5
+  },
+  "partitions": [],
+  "node_lifecycle": {
+    "restart_policies": []
+  },
+  "fuzz": {
+    "enabled": true,
+    "knobs": {
+      "vary_timeouts": true,
+      "burst_drops_pct": true,
+      "tail_latency_events": true
+    }
+  },
+  "stop": {
+    "max_ms": 30000,
+    "min_commits": 2000,
+    "fail_fast": false
+  },
+  "artifacts": {
+    "html": "artifacts/tail_latency_bursts.html",
+    "json": "artifacts/tail_latency_bursts.json"
+  }
+}
