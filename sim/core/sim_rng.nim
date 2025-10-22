@@ -9,6 +9,7 @@ import std/math
 
 import types
 import ../../src/raft/types
+import std/strformat
 
 type
   SimRng* = ref object
@@ -37,11 +38,22 @@ proc newSimRng*(seed: uint64): SimRng =
   ## Create a new SimRng with the given seed
   SimRng(state: seed)
 
+proc next*(rng: SimRng): uint64 =
+  ## Generate next random uint64 using xorshift* algorithm
+  # xorshift* generator with good statistical properties
+  rng.state = rng.state xor (rng.state shr 12)
+  rng.state = rng.state xor (rng.state shl 25)
+  rng.state = rng.state xor (rng.state shr 27)
+  result = rng.state * 0x2545F4914F6CDD1D'u64
+
 proc rngFor*(baseRng: SimRng, domain: string): SimRng =
   ## Create a substream RNG for a specific domain/component
   ## This ensures stable random sequences even if other domains change
   let domainHash = hash(domain).uint64
-  let subSeed = murmurHash64(baseRng.state xor domainHash)
+  # Use the next random value from base RNG as additional entropy
+  # This ensures different calls get different seeds even for the same domain
+  let entropy = baseRng.next()
+  let subSeed = murmurHash64(baseRng.state xor domainHash xor entropy)
   SimRng(state: subSeed)
 
 proc rngFor*(baseRng: SimRng, nodeId: int): SimRng =
@@ -51,14 +63,6 @@ proc rngFor*(baseRng: SimRng, nodeId: int): SimRng =
 proc rngFor*(baseRng: SimRng, nodeId: RaftNodeId): SimRng =
   ## Create a substream RNG for a specific node (RaftNodeId overload)
   baseRng.rngFor("node-" & nodeId.id)
-
-proc next*(rng: SimRng): uint64 =
-  ## Generate next random uint64 using xorshift* algorithm
-  # xorshift* generator with good statistical properties
-  rng.state = rng.state xor (rng.state shr 12)
-  rng.state = rng.state xor (rng.state shl 25)
-  rng.state = rng.state xor (rng.state shr 27)
-  result = rng.state * 0x2545F4914F6CDD1D'u64
 
 proc nextFloat*(rng: SimRng): float =
   ## Generate random float in [0.0, 1.0)

@@ -15,6 +15,7 @@ import ../invariants/checker
 import ../raft/node_host
 import ../../src/raft/consensus_state_machine
 import ../../src/raft/types
+import ../../src/raft/log
 
 type
   # JSON trace data structures
@@ -63,6 +64,13 @@ type
     minLatencyMs*: int64
     maxLatencyMs*: int64
 
+  JsonCommittedEvent* = object
+    timeMs*: int64
+    nodeId*: int
+    entryIndex*: uint64
+    entryTerm*: uint64
+    entryData*: string
+
   JsonInvariantViolation* = object
     timeMs*: int64
     invariant*: string
@@ -80,6 +88,7 @@ type
     clusterStates*: seq[JsonClusterState]
     rpcEvents*: seq[JsonRpcEvent]
     faultEvents*: seq[JsonFaultEvent]
+    committedEvents*: seq[JsonCommittedEvent]
     invariantViolations*: seq[JsonInvariantViolation]
     messageStats*: JsonMessageStats
     finalStats*: JsonNode
@@ -102,6 +111,7 @@ proc newJsonTraceWriter*(config: ScenarioYaml, seed: uint64): JsonTraceWriter =
     clusterStates: @[],
     rpcEvents: @[],
     faultEvents: @[],
+    committedEvents: @[],
     invariantViolations: @[],
     messageStats: JsonMessageStats(
       totalMessages: 0,
@@ -268,6 +278,23 @@ proc recordInvariantViolation*(writer: JsonTraceWriter, timeMs: int64, violation
   # Mark the most recent cluster state as having invariant violations
   if writer.trace.clusterStates.len > 0:
     writer.trace.clusterStates[^1].invariantsOk = false
+
+proc recordCommittedEvent*(writer: JsonTraceWriter, timeMs: int64, nodeId: RaftNodeId, entry: LogEntry) =
+  ## Record a committed entry event
+  let entryData = if entry.kind == rletCommand:
+                    $cast[string](entry.command.data)
+                  else:
+                    ""  # Config entries have no data
+
+  let event = JsonCommittedEvent(
+    timeMs: timeMs,
+    nodeId: parseInt(nodeId.id),
+    entryIndex: entry.index.uint64,
+    entryTerm: entry.term.uint64,
+    entryData: entryData
+  )
+
+  writer.trace.committedEvents.add(event)
 
 proc finalizeMessageStats*(writer: JsonTraceWriter) =
   ## Finalize message statistics with calculated metrics

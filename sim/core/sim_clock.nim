@@ -1,115 +1,165 @@
 ## SimClock - Deterministic virtual time for simulation
 ##
 ## Provides a virtual clock that is manually advanced, ensuring deterministic
-## execution. Manages timers with stable ordering for reproducible runs.
+## execution. Manages unified event queue for timers, network events, and lifecycle events.
 
 import std/heapqueue
 import std/options
+import std/hashes
+
+import types
+import ../../src/raft/types
+
+# TimerId and TimerCallback are defined in types.nim
 
 type
-  TimerId* = distinct uint64
-  TimerCallback* = proc(id: TimerId) {.gcsafe, closure.}
-
-  Timer* = object
-    id*: TimerId
-    deadline*: int64  # milliseconds since sim start
-    callback*: TimerCallback
-    periodic*: bool   # if true, reschedule after firing
-    interval*: int64  # for periodic timers
-
   SimClock* = ref object
     nowMs*: int64
     nextTimerId*: TimerId
-    timers*: HeapQueue[Timer]
+    events*: HeapQueue[SimEvent]  # unified event queue
     firedCount*: uint64  # for debugging/metrics
-
-proc `<`*(a, b: Timer): bool =
-  ## Timer ordering: earlier deadline first, stable sort by ID on ties
-  if a.deadline != b.deadline:
-    return a.deadline < b.deadline
-  return a.id.uint64 < b.id.uint64
 
 proc newSimClock*(): SimClock =
   ## Create a new SimClock starting at time 0
   SimClock(
     nowMs: 0,
     nextTimerId: TimerId(1),
-    timers: initHeapQueue[Timer](),
+    events: initHeapQueue[SimEvent](),
     firedCount: 0
   )
 
 proc scheduleTimer*(clock: SimClock, delayMs: int64, callback: TimerCallback,
+                   kind: TimerKind = CustomTimer, nodeId: RaftNodeId = newRaftNodeId(""),
                    periodic: bool = false, interval: int64 = 0): TimerId =
   ## Schedule a timer to fire after delayMs milliseconds
   let deadline = clock.nowMs + delayMs
   let id = clock.nextTimerId
   clock.nextTimerId = TimerId(clock.nextTimerId.uint64 + 1)
 
-  let timer = Timer(
+  let timerData = TimerEventData(
     id: id,
-    deadline: deadline,
     callback: callback,
+    kind: kind,
+    generation: 0,  # Not used for now
+    cancelled: false,
     periodic: periodic,
     interval: interval
   )
 
-  clock.timers.push(timer)
+  let event = SimEvent(
+    deliverAt: deadline,
+    kind: TimerEvent,
+    timer: timerData
+  )
+
+  clock.events.push(event)
   return id
 
 proc `==`*(a, b: TimerId): bool = a.uint64 == b.uint64
 proc `!=`*(a, b: TimerId): bool = a.uint64 != b.uint64
+proc hash*(x: TimerId): Hash = hash(x.uint64)
 
 proc cancelTimer*(clock: SimClock, id: TimerId): bool =
   ## Cancel a timer by ID. Returns true if timer was found and cancelled.
+  # Find and mark the timer as cancelled in the event queue
   var found = false
-  var newTimers = initHeapQueue[Timer]()
+  var tempEvents = initHeapQueue[SimEvent]()
 
-  while clock.timers.len > 0:
-    let timer = clock.timers.pop()
-    if timer.id != id:
-      newTimers.push(timer)
-    else:
+  while clock.events.len > 0:
+    let event = clock.events.pop()
+    if event.kind == TimerEvent and event.timer.id == id:
+      # Mark as cancelled instead of removing
+      var cancelledEvent = event
+      cancelledEvent.timer.cancelled = true
+      tempEvents.push(cancelledEvent)
       found = true
+    else:
+      tempEvents.push(event)
 
-  clock.timers = newTimers
+  clock.events = tempEvents
   return found
 
-proc tick*(clock: SimClock, dtMs: int64 = 1) =
-  ## Advance time by dtMs milliseconds and fire any due timers
+proc scheduleEvent*(clock: SimClock, event: SimEvent) =
+  ## Schedule a general simulation event
+  clock.events.push(event)
+
+proc tick*(clock: SimClock, dtMs: int64 = 1, deliverCallback: proc(event: SimEvent) = nil) =
+  ## Advance time by dtMs milliseconds and process any due events
   let targetTime = clock.nowMs + dtMs
 
-  while clock.timers.len > 0 and clock.timers[0].deadline <= targetTime:
-    let timer = clock.timers.pop()
-    clock.nowMs = timer.deadline
+  while clock.events.len > 0 and clock.events[0].deliverAt <= targetTime:
+    let event = clock.events.pop()
+    clock.nowMs = event.deliverAt
 
-    # Fire the timer
-    timer.callback(timer.id)
-    clock.firedCount += 1
+    # Process the event based on its type
+    case event.kind:
+    of TimerEvent:
+      if not event.timer.cancelled:
+        # Fire the timer (basic cancellation support)
+        event.timer.callback(event.timer.id)
+        clock.firedCount += 1
 
-    # Reschedule if periodic
-    if timer.periodic:
-      let newDeadline = timer.deadline + timer.interval
-      let newTimer = Timer(
-        id: timer.id,
-        deadline: newDeadline,
-        callback: timer.callback,
-        periodic: true,
-        interval: timer.interval
-      )
-      clock.timers.push(newTimer)
+        # Reschedule periodic timers
+        if event.timer.periodic:
+          let newDeadline = clock.nowMs + event.timer.interval
+          let newTimerData = TimerEventData(
+            id: event.timer.id,
+            callback: event.timer.callback,
+            kind: event.timer.kind,
+            generation: event.timer.generation,
+            cancelled: false,
+            periodic: true,
+            interval: event.timer.interval
+          )
+          let newEvent = SimEvent(
+            deliverAt: newDeadline,
+            kind: TimerEvent,
+            timer: newTimerData
+          )
+          clock.events.push(newEvent)
+    of NetworkEvent, LifecycleEvt:
+      # Deliver to callback for processing (if provided)
+      if deliverCallback != nil:
+        deliverCallback(event)
 
-  # Advance to target time if no timers fired or after processing timers
+  # Periodic cleanup of cancelled events to maintain performance
+  const cleanupThreshold = 1000  # Clean up when queue has 1000+ events
+  const cleanupRatio = 0.5       # Clean up if 50% of events are cancelled
+
+  if clock.events.len > cleanupThreshold:
+    var cancelledCount = 0
+    for event in clock.events:
+      if event.kind == TimerEvent and event.timer.cancelled:
+        cancelledCount += 1
+
+    if cancelledCount.float / clock.events.len.float > cleanupRatio:
+      # Rebuild heap without cancelled events
+      var activeEvents = newSeq[SimEvent]()
+      for event in clock.events:
+        if not (event.kind == TimerEvent and event.timer.cancelled):
+          activeEvents.add(event)
+
+      # Rebuild the heap
+      clock.events = initHeapQueue[SimEvent]()
+      for event in activeEvents:
+        clock.events.push(event)
+
+  # Advance to target time if no events fired or after processing events
   clock.nowMs = targetTime
 
-proc nextTimerDeadline*(clock: SimClock): Option[int64] =
-  ## Return the deadline of the next timer, or none if no timers scheduled
-  if clock.timers.len == 0:
+proc nextEventDeadline*(clock: SimClock): Option[int64] =
+  ## Return the deadline of the next event, or none if no events scheduled
+  if clock.events.len == 0:
     return none(int64)
-  return some(clock.timers[0].deadline)
+  return some(clock.events[0].deliverAt)
 
-proc timeUntilNextTimer*(clock: SimClock): Option[int64] =
-  ## Return milliseconds until next timer fires, or none if no timers
-  let nextDeadline = clock.nextTimerDeadline()
+proc timeUntilNextEvent*(clock: SimClock): Option[int64] =
+  ## Return milliseconds until next event fires, or none if no events
+  let nextDeadline = clock.nextEventDeadline()
   if nextDeadline.isNone:
     return none(int64)
   return some(nextDeadline.get() - clock.nowMs)
+
+# Backward compatibility aliases
+proc nextTimerDeadline*(clock: SimClock): Option[int64] = clock.nextEventDeadline()
+proc timeUntilNextTimer*(clock: SimClock): Option[int64] = clock.timeUntilNextEvent()

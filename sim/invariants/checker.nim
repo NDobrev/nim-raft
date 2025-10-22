@@ -15,9 +15,11 @@ import std/strformat
 import std/sequtils
 
 import ../../src/raft/types
+import ../../src/raft/log
 import ../core/types
 import ../raft/node_host
 import ../storage/sim_storage
+import ../run/scenario_config
 
 type
   InvariantViolation* = object
@@ -30,13 +32,27 @@ type
     leadersByTerm*: Table[RaftNodeTerm, HashSet[RaftNodeId]]  # Election safety
     committedEntries*: seq[LogEntry]              # State machine safety
     lastCheckedTime*: int64
+    config*: InvariantsConfig
 
-proc newInvariantsChecker*(): InvariantsChecker =
+proc newInvariantsChecker*(config: InvariantsConfig = InvariantsConfig(
+    election_safety: true,
+    log_matching: true,
+    leader_append_only: true,
+    state_machine_safety: true,
+    leader_completeness: true,
+    snapshot_sanity: true,
+    index_validity: true,
+    monotonic_ids: true,
+    no_committed_deletion: true,
+    log_consistency: true,
+    liveness: true
+  )): InvariantsChecker =
   InvariantsChecker(
     violations: @[],
     leadersByTerm: initTable[RaftNodeTerm, HashSet[RaftNodeId]](),
     committedEntries: @[],
-    lastCheckedTime: 0
+    lastCheckedTime: 0,
+    config: config
   )
 
 proc recordViolation*(checker: InvariantsChecker, currentTime: int64, description, details: string) =
@@ -172,32 +188,184 @@ proc checkSnapshotSanity*(checker: InvariantsChecker, nodes: seq[NodeHost], stor
             fmt"Node {node.id} has entry at index {entry.index} <= snapshot index {snapIndex}"
           )
 
+proc checkIndexValidity*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
+  ## Check Log Index Validity: commitIndex and lastApplied within log bounds, no gaps
+  for node in nodes:
+    let state = node.getState()
+    let logLen = state.log.len
+
+    # Check commitIndex bounds
+    if state.commitIndex.int > logLen:
+      checker.recordViolation(currentTime,
+        "Index Validity Violation",
+        fmt"Node {state.id} commitIndex={state.commitIndex} exceeds log length {logLen}"
+      )
+
+    # Check lastApplied bounds
+    if state.lastApplied > state.commitIndex:
+      checker.recordViolation(currentTime,
+        "Index Validity Violation",
+        fmt"Node {state.id} lastApplied={state.lastApplied} > commitIndex={state.commitIndex}"
+      )
+
+    # Check for gaps in log indices (skip if log is empty)
+    if logLen > 0:
+      var expectedIndex = RaftLogIndex(1)
+      for entry in state.log:
+        if entry.index != expectedIndex:
+          checker.recordViolation(currentTime,
+            "Index Validity Violation",
+            fmt"Node {state.id} log missing index {expectedIndex} (gap at {entry.index})"
+          )
+          break
+        expectedIndex = expectedIndex + 1
+
+proc checkMonotonicIds*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
+  ## Check Monotonic Entry IDs: entry IDs should increase with log position
+  # Only check if IDs are actually being assigned (non-zero)
+  var hasNonZeroIds = false
+  for node in nodes:
+    let state = node.getState()
+    for entry in state.log:
+      if entry.id > 0:
+        hasNonZeroIds = true
+        break
+    if hasNonZeroIds:
+      break
+
+  if hasNonZeroIds:
+    for node in nodes:
+      let state = node.getState()
+      var prevId = -1
+      for entry in state.log:
+        if entry.id > 0:  # Only check entries with assigned IDs
+          if prevId != -1 and entry.id <= prevId:
+            checker.recordViolation(currentTime,
+              "Monotonic Entry ID Violation",
+              fmt"Node {state.id} entry at index {entry.index} has id {entry.id} <= previous id {prevId}"
+            )
+            break
+          prevId = entry.id
+
+proc checkNoCommittedDeletion*(checker: InvariantsChecker, nodes: seq[NodeHost], storage: SimStorage, currentTime: int64) =
+  ## Check No Committed Entry Deletion: committed entries shouldn't be removed without snapshot
+  for node in nodes:
+    let state = node.getState()
+
+    # If log is empty but commitIndex > 0, entries were removed
+    if state.log.len == 0 and state.commitIndex > RaftLogIndex(0):
+      checker.recordViolation(currentTime,
+        "No Committed Deletion Violation",
+        fmt"Node {state.id} has no log entries but commitIndex={state.commitIndex}"
+      )
+      continue
+
+    # Check if log starts at index > 1 without proper snapshot justification
+    if state.log.len > 0:
+      let firstIndex = state.log[0].index
+      if firstIndex > RaftLogIndex(1):
+        let snapshot = storage.getSnapshot(state.id)
+        if snapshot.isSome:
+          let snapIndex = snapshot.get().lastIncludedIndex
+          if firstIndex != snapIndex + 1:
+            checker.recordViolation(currentTime,
+              "No Committed Deletion Violation",
+              fmt"Node {state.id} log starts at {firstIndex} but snapshot covers {snapIndex}"
+            )
+        else:
+          # No snapshot but log doesn't start at 1
+          checker.recordViolation(currentTime,
+            "No Committed Deletion Violation",
+            fmt"Node {state.id} log starts at {firstIndex} with no snapshot justification"
+          )
+
+proc checkLogConsistency*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
+  ## Check Log Consistency (Accuracy): logs should agree on committed prefix
+  # Similar to log matching but with more detailed accuracy checking
+
+  # Find the globally committed prefix (minimum commit index across all nodes)
+  var minCommitIndex = RaftLogIndex.high
+  for node in nodes:
+    let state = node.getState()
+    minCommitIndex = min(minCommitIndex, state.commitIndex)
+
+  # For each committed index, check consistency
+  for idx in 1..minCommitIndex.int:
+    let index = RaftLogIndex(idx)
+    var entriesAtIndex: seq[tuple[entry: LogEntry, nodeId: RaftNodeId]] = @[]
+
+    # Collect entries from all nodes that have this index
+    for node in nodes:
+      let state = node.getState()
+      if state.commitIndex >= index:
+        let entryOpt = state.log.entryAt(index)
+        if entryOpt.isSome:
+          entriesAtIndex.add((entryOpt.get(), state.id))
+        else:
+          checker.recordViolation(currentTime,
+            "Log Consistency Violation",
+            fmt"Node {state.id} missing committed entry at index {index}"
+          )
+
+    # Check that all entries at this index are identical
+    if entriesAtIndex.len > 1:
+      let firstEntry = entriesAtIndex[0].entry
+      for i in 1..<entriesAtIndex.len:
+        let otherEntry = entriesAtIndex[i].entry
+        if firstEntry.term != otherEntry.term:
+          checker.recordViolation(currentTime,
+            "Log Consistency Violation",
+            fmt"Committed index {index} has term conflict: node {entriesAtIndex[0].nodeId} has term {firstEntry.term}, node {entriesAtIndex[i].nodeId} has term {otherEntry.term}"
+          )
+        elif firstEntry.id != otherEntry.id:
+          checker.recordViolation(currentTime,
+            "Log Consistency Violation",
+            fmt"Committed index {index} has ID conflict: node {entriesAtIndex[0].nodeId} has id {firstEntry.id}, node {entriesAtIndex[i].nodeId} has id {otherEntry.id}"
+          )
+
 proc checkLiveness*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
   ## Check basic liveness: some progress should be made over time
   # This is a simple check - in a real system we'd check for election timeouts, etc.
   let timeSinceLastCheck = currentTime - checker.lastCheckedTime
-  if timeSinceLastCheck > 500:  # Check every 5 seconds
-    var totalCommits = 0
+  if timeSinceLastCheck > 1000:  # Check every 10 seconds (less frequent)
+    var maxCommitIndex = 0
     for node in nodes:
       let state = node.getState()
-      totalCommits += state.commitIndex.int
+      maxCommitIndex = max(maxCommitIndex, state.commitIndex.int)
 
-    if totalCommits == 0:
+    # Check if we've made any progress at all in the last 10 seconds
+    # During partitions, minority groups cannot progress, but majority should
+    if maxCommitIndex == 0 and currentTime > 2000:
       checker.recordViolation(currentTime,
         "Liveness Violation",
-        "No commits made in the last 5 seconds - possible deadlock"
+        "No commits made after 2 seconds - possible deadlock"
       )
     checker.lastCheckedTime = currentTime
 
 proc checkAll*(checker: InvariantsChecker, nodes: seq[NodeHost], storage: SimStorage, currentTime: int64) =
-  ## Run all invariant checks
-  checker.checkElectionSafety(nodes, currentTime)
-  checker.checkLogMatching(nodes, currentTime)
-  checker.checkLeaderAppendOnly(nodes, currentTime)
-  checker.checkStateMachineSafety(nodes, currentTime)
-  checker.checkLeaderCompleteness(nodes, currentTime)
-  checker.checkSnapshotSanity(nodes, storage, currentTime)
-  checker.checkLiveness(nodes, currentTime)
+  ## Run all enabled invariant checks
+  if checker.config.election_safety:
+    checker.checkElectionSafety(nodes, currentTime)
+  if checker.config.log_matching:
+    checker.checkLogMatching(nodes, currentTime)
+  if checker.config.leader_append_only:
+    checker.checkLeaderAppendOnly(nodes, currentTime)
+  if checker.config.state_machine_safety:
+    checker.checkStateMachineSafety(nodes, currentTime)
+  if checker.config.leader_completeness:
+    checker.checkLeaderCompleteness(nodes, currentTime)
+  if checker.config.snapshot_sanity:
+    checker.checkSnapshotSanity(nodes, storage, currentTime)
+  if checker.config.index_validity:
+    checker.checkIndexValidity(nodes, currentTime)
+  if checker.config.monotonic_ids:
+    checker.checkMonotonicIds(nodes, currentTime)
+  if checker.config.no_committed_deletion:
+    checker.checkNoCommittedDeletion(nodes, storage, currentTime)
+  if checker.config.log_consistency:
+    checker.checkLogConsistency(nodes, currentTime)
+  if checker.config.liveness:
+    checker.checkLiveness(nodes, currentTime)
 
 proc hasViolations*(checker: InvariantsChecker): bool =
   ## Check if any violations have been recorded

@@ -99,6 +99,20 @@ type
     election_timeout_ms*: TimeoutRange
     heartbeat_ms*: int64
 
+  # Invariants configuration
+  InvariantsConfig* = object
+    election_safety*: bool
+    log_matching*: bool
+    leader_append_only*: bool
+    state_machine_safety*: bool
+    leader_completeness*: bool
+    snapshot_sanity*: bool
+    index_validity*: bool
+    monotonic_ids*: bool
+    no_committed_deletion*: bool
+    log_consistency*: bool
+    liveness*: bool
+
   # Complete scenario configuration
   ScenarioYaml* = object
     seed*: uint64
@@ -111,6 +125,7 @@ type
     fuzz*: FuzzConfig
     stop*: StopConfig
     artifacts*: ArtifactsConfig
+    invariants*: Option[InvariantsConfig]
 
 proc loadScenarioFromYaml*(path: string): ScenarioYaml =
   ## Load a scenario configuration from a YAML/JSON file

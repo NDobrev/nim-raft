@@ -39,6 +39,10 @@ type
     electionTimeoutMs*: int64
     heartbeatTimeoutMs*: int64
 
+    # Configuration tracking for stepdown logic
+    currentConfig*: RaftConfig
+    isVotingMember*: bool
+
 
 # Types are now used directly - no conversion needed
 
@@ -58,6 +62,8 @@ method initialize*(adapter: RaftSmAdapter, nodeId: RaftNodeId, callbacks: RaftHo
 
   # Create initial configuration with all cluster nodes
   let initialConfig = RaftConfig(currentSet: clusterConfig)
+  adapter.currentConfig = initialConfig
+  adapter.isVotingMember = true  # Start as voting member
 
   # Create initial log with empty snapshot
   let initialSnapshot = RaftSnapshot(
@@ -107,8 +113,21 @@ method tick*(adapter: RaftSmAdapter) =
   # Apply any committed entries to storage
   for entry in output.committed:
     if entry.kind == rletCommand:
+      # Record committed event for metrics
+      if adapter.callbacks.onCommitted != nil:
+        adapter.callbacks.onCommitted(adapter.nodeId, entry)
       # In a real implementation, this would apply the command to the state machine
       discard
+    elif entry.kind == rletConfig:
+      # Update current configuration
+      adapter.currentConfig = entry.config
+      # Check if this node is still a voting member
+      adapter.isVotingMember = entry.config.contains(adapter.nodeId)
+
+      # If this node is no longer in the configuration and was leader, it should step down
+      if not adapter.isVotingMember and adapter.raft.state.state == RaftNodeState.rnsLeader:
+        # The core Raft implementation should handle stepdown, but we can log it
+        echo fmt"Node {adapter.nodeId} stepping down: removed from configuration"
 
   # Persist any new log entries
   for entry in output.logEntries:
@@ -143,6 +162,9 @@ method getState*(adapter: RaftSmAdapter): NodeState =
              else:
                sim_types.Follower
 
+  # Log state when polled (for debugging)
+  let currentLeader = if adapter.raft.state.isFollower: adapter.raft.state.follower.leader else: RaftNodeId.empty
+
   # Collect log entries from the Raft log
   var logEntries: seq[LogEntry] = @[]
   let log = adapter.raft.log
@@ -153,7 +175,10 @@ method getState*(adapter: RaftSmAdapter): NodeState =
   let output = adapter.raft.poll()
   let votedFor = output.votedFor
 
-  NodeState(
+  for debugMsg in output.debugLogs:
+    echo fmt"RAFT: Node {adapter.nodeId} {debugMsg.time} {debugMsg.state} {debugMsg.term} {debugMsg.level} {debugMsg.msg}"
+
+  NodeState(    
     id: adapter.nodeId,
     role: role,
     currentTerm: RaftNodeTerm(adapter.raft.term),
@@ -164,6 +189,8 @@ method getState*(adapter: RaftSmAdapter): NodeState =
     nextIndex: initTable[RaftNodeId, RaftLogIndex](),  # Would need to be populated from leader state
     matchIndex: initTable[RaftNodeId, RaftLogIndex]()   # Would need to be populated from leader state
   )
+
+  
 
 method getCommitIndex*(adapter: RaftSmAdapter): RaftLogIndex =
   ## Get current commit index

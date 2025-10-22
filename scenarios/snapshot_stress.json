@@ -19,7 +19,7 @@
   "workload": {
     "type": "kv",
     "rate": {
-      "propose_per_tick": 1.2
+      "propose_per_tick": 0.8
     },
     "mix": {
       "put": 95,

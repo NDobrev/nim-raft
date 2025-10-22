@@ -7,6 +7,8 @@ import std/options
 import std/tables
 
 import sim_clock
+import types
+import std/strformat
 
 type
   SchedulerCallback* = proc() {.gcsafe, closure.}
@@ -43,20 +45,14 @@ proc schedulePeriodic*(scheduler: SimScheduler, name: string, intervalMs: int64,
     let oldTask = scheduler.periodicTasks[name]
     discard scheduler.clock.cancelTimer(oldTask.id)
 
-  let taskId = scheduler.clock.scheduleTimer(intervalMs, proc(id: TimerId) =
+  # Create the periodic callback that executes the user callback and reschedules itself
+  proc periodicCallback(id: TimerId) {.gcsafe.} =
     if scheduler.periodicTasks.contains(name):
       var task = scheduler.periodicTasks[name]
       if task.active:
         task.callback()
-        # Reschedule for next interval
-        task.id = scheduler.clock.scheduleTimer(task.interval, proc(newId: TimerId) =
-          if scheduler.periodicTasks.contains(name):
-            var t = scheduler.periodicTasks[name]
-            t.id = newId
-            scheduler.periodicTasks[name] = t
-        , periodic = true, interval = task.interval)
-        scheduler.periodicTasks[name] = task
-  , periodic = true, interval = intervalMs)
+
+  let taskId = scheduler.clock.scheduleTimer(intervalMs, periodicCallback, periodic = true, interval = intervalMs)
 
   let task = PeriodicTask(
     id: taskId,

@@ -2,6 +2,16 @@ import types
 import std/[strformat, options]
 import strutils
 
+# Global counter for simulation entry IDs (only used in sim mode)
+var nextEntryId* = 0
+
+func getNextEntryId*(): int =
+  when defined(sim):
+    {.noSideEffect.}:
+      nextEntryId.inc()
+      return nextEntryId
+  return 0
+
 type
   RaftLogEntryType* = enum
     rletCommand = 0
@@ -25,6 +35,7 @@ type
     of rletCommand: command*: Command
     of rletConfig: config*: RaftConfig
     of rletEmpty: discard
+    id*: int  # unique entry ID for simulation/debugging
 
   RaftSnapshot* = object
     index*: RaftLogIndex

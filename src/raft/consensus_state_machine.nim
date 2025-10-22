@@ -167,7 +167,7 @@ func checkInvariants*(sm: RaftStateMachineRef) =
   doAssert sm.commitIndex <= sm.log.lastIndex,
     fmt"commit index {sm.commitIndex} beyond log {sm.log.lastIndex}"
 
-const loglevel {.intdefine.}: int = int(DebugLogLevel.Debug)
+const loglevel {.intdefine.}: int = int(DebugLogLevel.Info)
 const pollCheckInvariants {.booldefine.} = false
 
 template addDebugLogEntry(
@@ -557,6 +557,7 @@ func addEntry(sm: RaftStateMachineRef, entry: LogEntry): LogEntry =
     tmpCfg.enterJoint(tmpEntry.config.currentSet)
     tmpEntry.config = tmpCfg
 
+  sm.debug "Adding entry to log: term=" & $entry.term & ", index=" & $entry.index & ", id=" & $entry.id & ", kind=" & $entry.kind
   sm.log.appendAsLeader(tmpEntry)
   if entry.kind == rletConfig:
     sm.debug "Update leader config"
@@ -613,9 +614,11 @@ func becomeLeader*(sm: RaftStateMachineRef) =
 func becomeCandidate*(sm: RaftStateMachineRef) =
   if not sm.state.isCandidate:
     sm.output.stateChange = true
+    sm.info "State change: becoming candidate (election timeout or start)"
 
   sm.state = initCandidate(sm.log.configuration)
-  sm.debug "Become candidate with config" & $sm.log.configuration
+  sm.info "BECOME CANDIDATE: node=" & $sm.myId & ", term=" & $sm.term & ", config=" & $sm.log.configuration & ", time=" & $sm.timeNow
+  sm.debug "Become candidate with config" & $sm.log.configuration & ", term=" & $sm.term & ", time=" & $sm.timeNow
   sm.lastElectionTime = sm.timeNow
 
   if not sm.candidate.votes.contains(sm.myId):
@@ -625,21 +628,20 @@ func becomeCandidate*(sm: RaftStateMachineRef) =
       return
 
   sm.term = sm.term + 1
-  sm.info fmt"Transition to candidate term={sm.term} voters={sm.candidate.votes.voters.len}"
-  for nodeId in sm.candidate.votes.voters:
-    if nodeId == sm.myId:
-      sm.debug "register vote for it self in term" & $sm.term
-      discard sm.candidate.votes.registerVote(nodeId, true)
-      sm.votedFor = nodeId
-      continue
 
-    let request = RaftRpcVoteRequest(
-      currentTerm: sm.term,
-      lastLogIndex: sm.log.lastIndex,
-      lastLogTerm: sm.log.lastTerm,
-      force: false,
-    )
-    sm.sendTo(nodeId, request)
+  # Register the candidate's own vote (doesn't set votedFor)
+  discard sm.candidate.votes.registerVote(sm.myId, true)
+  sm.votedFor = sm.myId
+
+  for nodeId in sm.candidate.votes.voters:
+    if nodeId != sm.myId:  # Don't send vote request to ourselves
+      let request = RaftRpcVoteRequest(
+        currentTerm: sm.term,
+        lastLogIndex: sm.log.lastIndex,
+        lastLogTerm: sm.log.lastTerm,
+        force: false,
+      )
+      sm.sendTo(nodeId, request)
   if sm.candidate.votes.tallyVote == RaftElectionResult.Won:
     sm.debug "Elecation won" & $(sm.candidate.votes) & $sm.myId
     sm.becomeLeader()
@@ -734,6 +736,7 @@ func commit(sm: RaftStateMachineRef) =
     sm.error "connot commit because new entry has different term"
     return
 
+  sm.debug "Leader committing entries up to index " & $newCommitIndex & " (was " & $sm.commitIndex & ")"
   sm.commitIndex = newCommitIndex
   sm.checkInvariants()
   if configurationChange:
@@ -937,7 +940,10 @@ func appendEntryReply*(
 func advanceCommitIdx(sm: RaftStateMachineRef, leaderIdx: RaftLogIndex) =
   let newIdx = min(leaderIdx, sm.log.lastIndex)
   if newIdx > sm.commitIndex:
+    sm.debug "Advancing commit index from " & $sm.commitIndex & " to " & $newIdx & " (leader suggested " & $leaderIdx & ")"
     sm.commitIndex = newIdx
+  else:
+    sm.debug "No commit advancement needed: current=" & $sm.commitIndex & ", proposed=" & $newIdx & ", leader=" & $leaderIdx
 
 func appendEntry*(
     sm: RaftStateMachineRef, fromId: RaftNodeId, request: RaftRpcAppendRequest
@@ -1029,7 +1035,13 @@ func requestVote*(
   let canVote =
     sm.votedFor == fromId or
     (sm.votedFor == RaftNodeId.empty and sm.currentLeader == RaftNodeId.empty)
-  if canVote and sm.log.isUpToDate(request.lastLogIndex, request.lastLogTerm):
+  let logUpToDate = sm.log.isUpToDate(request.lastLogIndex, request.lastLogTerm)
+
+  sm.info "VOTE REQUEST: node=" & $sm.myId & ", from=" & $fromId & ", term=" & $request.currentTerm &
+          ", votedFor=" & $sm.votedFor & ", hasLeader=" & $(sm.currentLeader != RaftNodeId.empty) &
+          ", canVote=" & $canVote & ", logUpToDate=" & $logUpToDate
+
+  if canVote and logUpToDate:
     sm.votedFor = fromId
     sm.lastElectionTime = sm.timeNow
     sm.debug fmt"Granting vote to {fromId.id} term={sm.term} lastLogIndex={request.lastLogIndex} lastLogTerm={request.lastLogTerm} force={request.force}"

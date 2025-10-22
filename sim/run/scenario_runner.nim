@@ -37,7 +37,24 @@ type
     lifecycleEvents*: seq[LifecycleEvent]
     invariants*: InvariantsChecker
     commitCount*: int  # Track total commits across all nodes
+    proposalAttempts*: int  # Track total proposal attempts
     jsonWriter*: JsonTraceWriter
+    eventTrace*: EventTrace  # Rolling event trace for diagnostics
+
+proc logEvent*(runner: ScenarioRunner, kind: EventTraceKind, nodeId: RaftNodeId,
+               description: string, details: string = "") =
+  ## Log an event to the rolling trace buffer for diagnostics
+  let entry = EventTraceEntry(
+    timestamp: runner.clock.nowMs,
+    kind: kind,
+    nodeId: nodeId,
+    description: description,
+    details: details
+  )
+  runner.eventTrace.add(entry)
+  # Keep only the last 50 entries
+  if runner.eventTrace.len > 50:
+    runner.eventTrace = runner.eventTrace[^50..^1]
 
 proc newScenarioRunner*(config: ScenarioYaml): ScenarioRunner =
   let rng = newSimRng(config.seed)
@@ -45,6 +62,17 @@ proc newScenarioRunner*(config: ScenarioYaml): ScenarioRunner =
   let scheduler = newSimScheduler(clock)
   let storage = newSimStorage(rng.rngFor("storage"))
   let net = newSimNet(rng.rngFor("net"))
+
+  # Configure network fault policy based on scenario config
+  let defaultPolicy = NetFaultPolicy(
+    latencyBase: config.net.latency_ms.base,
+    latencyJitter: config.net.latency_ms.jitter,
+    latencyP99: config.net.latency_ms.p99,
+    dropPercent: config.net.drop_pct / 100.0,  # Convert from percentage to fraction
+    duplicatePercent: config.net.dup_pct / 100.0,  # Convert from percentage to fraction
+    reorderWindow: config.net.reorder_window
+  )
+  net.defaultPolicy = defaultPolicy
 
   var runner = ScenarioRunner(
     config: config,
@@ -56,11 +84,29 @@ proc newScenarioRunner*(config: ScenarioYaml): ScenarioRunner =
     nodes: initTable[RaftNodeId, NodeHost](),
     lifecycleEvents: @[],
     commitCount: 0,
-    jsonWriter: newJsonTraceWriter(config, rng.state)
+    proposalAttempts: 0,
+    jsonWriter: newJsonTraceWriter(config, rng.state),
+    eventTrace: @[]
   )
 
   # Initialize invariants checker
-  runner.invariants = newInvariantsChecker()
+  let invariantsConfig = if config.invariants.isSome:
+                           config.invariants.get()
+                         else:
+                           InvariantsConfig(
+                             election_safety: true,
+                             log_matching: true,
+                             leader_append_only: true,
+                             state_machine_safety: true,
+                             leader_completeness: true,
+                             snapshot_sanity: true,
+                             index_validity: true,
+                             monotonic_ids: true,
+                             no_committed_deletion: true,
+                             log_consistency: true,
+                             liveness: true
+                           )
+  runner.invariants = newInvariantsChecker(invariantsConfig)
 
   # Collect all node IDs first
   var allNodeIds: seq[RaftNodeId]
@@ -87,7 +133,11 @@ proc newScenarioRunner*(config: ScenarioYaml): ScenarioRunner =
       some(proc(timeMs: int64, rpc: RaftRpcMessage, fromNode, toNode: RaftNodeId) =
         runner.jsonWriter.recordRpcEvent(timeMs, rpc, fromNode, toNode)),
       some(proc(nodeId: RaftNodeId, event: LifecycleEvent) =
-        runner.lifecycleEvents.add(event))
+        runner.lifecycleEvents.add(event)),
+      some(proc(kind: EventTraceKind, nodeId: RaftNodeId, description: string, details: string = "") =
+        logEvent(runner, kind, nodeId, description, details)),
+      some(proc(timeMs: int64, nodeId: RaftNodeId, entry: LogEntry) =
+        runner.jsonWriter.recordCommittedEvent(timeMs, nodeId, entry))
     )
     runner.nodes[nodeId] = host
 
@@ -97,14 +147,119 @@ proc getAllNodes*(runner: ScenarioRunner): seq[NodeHost] =
   ## Get all node hosts
   toSeq(runner.nodes.values)
 
-proc deliverRpc*(runner: ScenarioRunner, event: NetEvent) =
-  ## Deliver an RPC to the appropriate node
-  if runner.nodes.contains(event.toNode):
-    let host = runner.nodes[event.toNode]
-    host.step(event.rpc)
+proc deliverEvent*(runner: ScenarioRunner, event: SimEvent) =
+  ## Deliver an event to the appropriate handler
+  case event.kind:
+  of NetworkEvent:
+    # Convert to legacy NetEvent and deliver
+    if runner.nodes.contains(event.network.toNode):
+      let host = runner.nodes[event.network.toNode]
+      host.step(event.network.rpc)
+      # Update network stats
+      runner.net.deliveredCount += 1
+      # Log message receive event
+      let rpcKind = case event.network.rpc.kind:
+        of VoteRequest: "VoteRequest"
+        of VoteReply: "VoteReply"
+        of AppendRequest: "AppendRequest"
+        of AppendReply: "AppendReply"
+        of InstallSnapshot: "InstallSnapshot"
+        of SnapshotReply: "SnapshotReply"
+      runner.logEvent(MessageReceive, event.network.toNode,
+                      fmt"Received {rpcKind} from {event.network.fromNode}",
+                      fmt"term={event.network.rpc.currentTerm}")
+  of TimerEvent:
+    # Timer events are handled by the clock.tick method directly
+    discard
+  of LifecycleEvt:
+    # Handle partition lifecycle events
+    if event.lifecycle.nodeId.id == "partition-activate":
+      # Apply partitions from scenario config that start at this time
+      for partitionSpec in runner.config.partitions:
+        if partitionSpec.at_ms == event.deliverAt:
+          # Check if this is a healing partition (empty components)
+          if partitionSpec.components.len == 0 or partitionSpec.components.allIt(it.len == 0):
+            # This is a healing event - clear all partitions
+            runner.net.clearPartitions()
+            echo fmt"Healed all partitions at {partitionSpec.at_ms}ms"
+          else:
+            # This is a partitioning event - apply the partition
+            var components: seq[seq[RaftNodeId]] = @[]
+            for comp in partitionSpec.components:
+              var nodeIds: seq[RaftNodeId] = @[]
+              for nodeIdx in comp:
+                nodeIds.add(newRaftNodeId($nodeIdx))
+              components.add(nodeIds)
+
+            let endTime = if partitionSpec.heal.isSome and partitionSpec.heal.get():
+                         some(event.deliverAt + 5000)  # Heal after 5 seconds for now
+                       else:
+                         none(int64)
+
+            let partition = Partition(
+              components: components,
+              startTime: partitionSpec.at_ms,
+              endTime: endTime
+            )
+            runner.net.addPartition(partition)
+            echo fmt"Applied partition at {partitionSpec.at_ms}ms: {partition.components}"
+          break
+
+proc dumpState*(runner: ScenarioRunner): string =
+  ## Dump the current cluster state for diagnostics
+  var lines: seq[string]
+  lines.add("Cluster State:")
+  lines.add(fmt"  Time: {runner.clock.nowMs}ms")
+  lines.add(fmt"  Total commits: {runner.commitCount}")
+  lines.add(fmt"  Proposal attempts: {runner.proposalAttempts}")
+
+  for node in runner.getAllNodes():
+    if node.isAlive():
+      let state = node.getState()
+      let lastLogIndex = if state.log.len > 0: state.log[^1].index else: RaftLogIndex(0)
+      lines.add(fmt"  Node {state.id}: {state.role}, term={state.currentTerm}, commit={state.commitIndex}")
+      lines.add(fmt"    Log: {state.log.len} entries, lastLogIndex={lastLogIndex}, lastApplied={state.lastApplied}")
+      if state.role == Leader:
+        lines.add(fmt"    Leader state: nextIndex={state.nextIndex}, matchIndex={state.matchIndex}")
+
+  lines.add("")
+  result = lines.join("\n")
+
+proc dumpRecentEvents*(runner: ScenarioRunner): string =
+  ## Dump the recent event trace for diagnostics
+  var lines: seq[string]
+  lines.add("Recent Events (last 50):")
+
+  if runner.eventTrace.len == 0:
+    lines.add("  No events recorded")
+  else:
+    for i in countdown(runner.eventTrace.high, 0):
+      let entry = runner.eventTrace[i]
+      lines.add(fmt"  [{entry.timestamp}ms] {entry.nodeId}: {entry.kind} - {entry.description}")
+      if entry.details.len > 0:
+        lines.add(fmt"    {entry.details}")
+
+  lines.add("")
+  result = lines.join("\n")
 
 proc run*(runner: ScenarioRunner): bool =
   ## Run the scenario until completion or timeout
+
+  # Set up partition scheduling from scenario config
+  for partitionSpec in runner.config.partitions:
+    let specCopy = partitionSpec  # Create a copy to capture
+    let runnerRef = runner  # Capture the runner ref
+
+    # Schedule partition activation
+    runner.clock.scheduleEvent(SimEvent(
+      deliverAt: specCopy.at_ms,
+      kind: LifecycleEvt,
+      lifecycle: LifecycleEventData(
+        nodeId: newRaftNodeId("partition-activate"),  # Dummy node ID for partition events
+        state: Up,  # Using Up to indicate partition activation
+        wipedDb: false
+      )
+    ))
 
   # Set up lifecycle chaos from restart policies
   for policy in runner.config.node_lifecycle.restart_policies:
@@ -144,6 +299,7 @@ proc run*(runner: ScenarioRunner): bool =
         let workloadRng = runnerRef.rng.rngFor("workload")
         # Try to propose based on the rate
         if workloadRng.bernoulli(runnerRef.config.workload.rate.propose_per_tick):
+          runnerRef.proposalAttempts += 1
           # Find the current leader node to propose to
           var leaderNode: Option[RaftNodeId] = none(RaftNodeId)
           for nodeId, nodeHost in runnerRef.nodes.pairs:
@@ -165,8 +321,11 @@ proc run*(runner: ScenarioRunner): bool =
             let cmd = cast[seq[byte]](cmdStr)
 
             let success = runnerRef.nodes[targetNode].propose(cmd)
+
             if not success:
               echo fmt"Proposal to leader {targetNode} failed"
+              return
+            echo fmt"Proposal to leader {targetNode} succeeded"
           else:
             # No leader found - this is expected during leader elections
             discard
@@ -183,22 +342,18 @@ proc run*(runner: ScenarioRunner): bool =
     if shouldStopByTime or shouldStopByCommits:
       break
 
-    # Advance to next event time or by 1ms if no events
-    let nextEventTime = runner.scheduler.nextEventTime()
-    if nextEventTime.isSome:
-      let delta = nextEventTime.get() - runner.clock.nowMs
-      runner.clock.tick(delta)
-    else:
-      runner.clock.tick(1)
+    # Deliver any events scheduled for the current time
+    runner.clock.tick(0, proc(event: SimEvent) =
+      runner.deliverEvent(event))
 
-    # Deliver any pending network messages
-    runner.net.pump(runner.clock.nowMs, proc(event: NetEvent) =
-      runner.deliverRpc(event))
-
-    # Tick all alive nodes
+    # Tick all alive nodes (must happen every millisecond for Raft timeouts to work)
     for host in runner.nodes.values:
       if host.isAlive():
         host.tick()
+
+    # Advance time by 1ms
+    runner.clock.tick(1, proc(event: SimEvent) =
+      runner.deliverEvent(event))
 
     # Check invariants periodically (every 100ms)
     if runner.clock.nowMs mod 100 == 0:
@@ -223,12 +378,9 @@ proc run*(runner: ScenarioRunner): bool =
         let violations = runner.invariants.getViolations()
         echo fmt"Invariant violations detected ({violations.len} total) at t={runner.clock.nowMs}ms, continuing simulation..."
 
-        # Show current cluster state
-        echo "  Current cluster state:"
-        for node in nodes:
-          if node.isAlive():
-            let state = node.getState()
-            echo fmt"    Node {state.id}: {state.role}, term={state.currentTerm}, commit={state.commitIndex}"
+        # Dump detailed state and recent events for diagnostics
+        echo runner.dumpState()
+        echo runner.dumpRecentEvents()
 
         echo "  Recent violations:"
         for i, violation in violations:
@@ -239,6 +391,10 @@ proc run*(runner: ScenarioRunner): bool =
   if runner.invariants.hasViolations():
     let violations = runner.invariants.getViolations()
     echo fmt"Simulation completed with {violations.len} invariant violations:"
+
+    # Dump final state and recent events for diagnostics
+    echo runner.dumpState()
+    echo runner.dumpRecentEvents()
 
     # Group violations by type
     var violationCounts = initTable[string, int]()
@@ -256,7 +412,8 @@ proc run*(runner: ScenarioRunner): bool =
     }
     let finalStats = %*{
       "networkStats": networkStats,
-      "totalCommits": runner.commitCount
+      "totalCommits": runner.commitCount,
+      "proposalAttempts": runner.proposalAttempts
     }
     runner.jsonWriter.finishTrace(runner.clock.nowMs, false, runner.clock.nowMs.int64, finalStats)
     runner.jsonWriter.writeToFile(runner.config.artifacts.json)
@@ -275,7 +432,8 @@ proc run*(runner: ScenarioRunner): bool =
     }
     let finalStats = %*{
       "networkStats": networkStats,
-      "totalCommits": runner.commitCount
+      "totalCommits": runner.commitCount,
+      "proposalAttempts": runner.proposalAttempts
     }
     runner.jsonWriter.finishTrace(runner.clock.nowMs, true, runner.clock.nowMs.int64, finalStats)
     runner.jsonWriter.writeToFile(runner.config.artifacts.json)

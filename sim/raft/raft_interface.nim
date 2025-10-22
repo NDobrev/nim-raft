@@ -28,6 +28,7 @@ type
     randomBytes*: proc(n: int): seq[byte] {.gcsafe, closure.}
     randomInt*: proc(max: int): int {.gcsafe, closure.}
     getTime*: proc(): int64 {.gcsafe, closure.}
+    onCommitted*: proc(nodeId: RaftNodeId, entry: LogEntry) {.gcsafe, closure.}
 
 method initialize*(raft: RaftNode, nodeId: RaftNodeId, callbacks: RaftHostCallbacks, clusterConfig: seq[RaftNodeId]) {.base, gcsafe.} =
   ## Initialize the Raft node with its ID, host callbacks, and cluster configuration

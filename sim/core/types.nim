@@ -19,6 +19,10 @@ export log.LogEntry
 # Use RaftRpcMessage types directly from main codebase
 
 type
+  # Timer types (forward declared for SimEvent)
+  TimerId* = distinct uint64
+  TimerCallback* = proc(id: TimerId) {.gcsafe, closure.}
+
   # Node state for simulation
   NodeRole* = enum
     Follower
@@ -33,11 +37,52 @@ type
     log*: seq[LogEntry]
     commitIndex*: RaftLogIndex
     lastApplied*: RaftLogIndex
+    # Timer generation counters for versioning
+    electionTimerGeneration*: int
+    heartbeatTimerGeneration*: int
     # Leader state
     nextIndex*: Table[RaftNodeId, RaftLogIndex]   # only valid when leader
     matchIndex*: Table[RaftNodeId, RaftLogIndex]  # only valid when leader
 
-  # Network event for simulation
+  # Unified event types for simulation
+  EventKind* = enum
+    TimerEvent
+    NetworkEvent
+    LifecycleEvt
+
+  TimerKind* = enum
+    ElectionTimeout
+    HeartbeatTimeout
+    CustomTimer
+
+  TimerEventData* = object
+    id*: TimerId
+    callback*: TimerCallback
+    kind*: TimerKind
+    generation*: int  # for versioning/cancellation
+    cancelled*: bool
+    periodic*: bool
+    interval*: int64
+
+  NetworkEventData* = object
+    fromNode*: RaftNodeId
+    toNode*: RaftNodeId
+    rpc*: RaftRpcMessage
+    duplicate*: bool   # true if this is a duplicate delivery
+
+  LifecycleEventData* = object
+    nodeId*: RaftNodeId
+    state*: LifecycleState
+    wipedDb*: bool
+
+  SimEvent* = object
+    deliverAt*: int64  # simulation time in ms
+    case kind*: EventKind
+    of TimerEvent: timer*: TimerEventData
+    of NetworkEvent: network*: NetworkEventData
+    of LifecycleEvt: lifecycle*: LifecycleEventData
+
+  # Legacy NetEvent for backward compatibility (will be removed)
   NetEvent* = object
     fromNode*: RaftNodeId
     toNode*: RaftNodeId
@@ -108,8 +153,35 @@ type
     maxTime*: Option[int64]
     minCommits*: Option[int]
 
+  # Event tracing system for diagnostics
+  EventTraceKind* = enum
+    MessageSend
+    MessageReceive
+    LeaderElected
+    LogAppend
+    LogCommit
+    EntryCommitted
+    TimerFired
+    NodeLifecycle
+    InvariantCheck
+
+  EventTraceEntry* = object
+    timestamp*: int64
+    kind*: EventTraceKind
+    nodeId*: RaftNodeId
+    description*: string
+    details*: string
+
+  EventTrace* = seq[EventTraceEntry]
+
 # NodeId operators are inherited from RaftNodeId
 # Term and LogIndex operators are inherited from the main codebase
+
+# Event ordering for priority queue (earlier delivery time first, stable sort by kind)
+proc `<`*(a, b: SimEvent): bool =
+  if a.deliverAt != b.deliverAt:
+    return a.deliverAt < b.deliverAt
+  return ord(a.kind) < ord(b.kind)
 
 proc newLogEntry*(term: RaftNodeTerm, index: RaftLogIndex, data: seq[byte]): LogEntry =
   LogEntry(term: term, index: index, kind: rletCommand, command: Command(data: data))

@@ -21,6 +21,10 @@ type
 
   RpcEventCallback* = proc(timeMs: int64, rpc: RaftRpcMessage, fromNode, toNode: RaftNodeId) {.gcsafe, closure.}
 
+  EventLogCallback* = proc(kind: EventTraceKind, nodeId: RaftNodeId, description: string, details: string = "") {.gcsafe, closure.}
+
+  CommittedEventCallback* = proc(timeMs: int64, nodeId: RaftNodeId, entry: LogEntry) {.gcsafe, closure.}
+
   NodeHost* = ref object
     id*: RaftNodeId
     clock*: SimClock
@@ -32,6 +36,12 @@ type
     lifecycleCallback*: Option[NodeLifecycleCallback]
     clusterConfig*: seq[RaftNodeId]
     rpcEventCallback*: Option[RpcEventCallback]
+    eventLogCallback*: Option[EventLogCallback]
+    committedEventCallback*: Option[CommittedEventCallback]
+
+    # Timer generation counters for versioning
+    electionTimerGeneration*: int
+    heartbeatTimerGeneration*: int
 
     # Raft implementation
     raft*: RaftNode
@@ -40,7 +50,9 @@ proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
                  rng: SimRng, storage: SimStorage, net: SimNet,
                  raftImpl: RaftNode, clusterConfig: seq[RaftNodeId],
                  rpcEventCallback: Option[RpcEventCallback] = none(RpcEventCallback),
-                 lifecycleCallback: Option[NodeLifecycleCallback] = none(NodeLifecycleCallback)): NodeHost =
+                 lifecycleCallback: Option[NodeLifecycleCallback] = none(NodeLifecycleCallback),
+                 eventLogCallback: Option[EventLogCallback] = none(EventLogCallback),
+                 committedEventCallback: Option[CommittedEventCallback] = none(CommittedEventCallback)): NodeHost =
   # Create the host as a mutable variable
   var host = NodeHost(
     id: id,
@@ -53,6 +65,10 @@ proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
     lifecycleCallback: lifecycleCallback,
     clusterConfig: clusterConfig,
     rpcEventCallback: rpcEventCallback,
+    eventLogCallback: eventLogCallback,
+    committedEventCallback: committedEventCallback,
+    electionTimerGeneration: 0,
+    heartbeatTimerGeneration: 0,
     raft: raftImpl
   )
 
@@ -63,7 +79,7 @@ proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
         # Record the RPC event for statistics
         if host.rpcEventCallback.isSome:
           host.rpcEventCallback.get()(host.clock.nowMs, rpc, host.id, target)
-        host.net.send(rpc, host.id, target, host.clock.nowMs),
+        host.net.send(host.clock, rpc, host.id, target),
     persistTerm: proc(term: RaftNodeTerm) = host.storage.persistTerm(host.id, term),
     persistVotedFor: proc(votedFor: Option[RaftNodeId]) = host.storage.persistVotedFor(host.id, votedFor),
     persistLogEntry: proc(entry: LogEntry) = host.storage.persistLogEntry(host.id, entry),
@@ -78,7 +94,14 @@ proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
         bytes[i] = byte(host.rng.next() and 0xFF)
       return bytes,
     randomInt: proc(max: int): int = host.rng.nextInt(max),
-    getTime: proc(): int64 = host.clock.nowMs
+    getTime: proc(): int64 = host.clock.nowMs,
+    onCommitted: proc(nodeId: RaftNodeId, entry: LogEntry) =
+      # Record committed event to JSON writer
+      if host.committedEventCallback.isSome:
+        host.committedEventCallback.get()(host.clock.nowMs, nodeId, entry)
+      # Forward to event log callback if available
+      if host.eventLogCallback.isSome:
+        host.eventLogCallback.get()(EntryCommitted, nodeId, fmt"Entry {entry.index} committed", fmt"term={entry.term}")
   )
 
   # Initialize the Raft implementation
@@ -123,7 +146,7 @@ proc sendRpc*(host: NodeHost, target: RaftNodeId, rpc: RaftRpcMessage) =
   if not host.alive:
     return
 
-  host.net.send(rpc, host.id, target, host.clock.nowMs)
+  host.net.send(host.clock, rpc, host.id, target)
 
 proc stop*(host: var NodeHost) =
   ## Stop this node (simulates crash/failure)
@@ -155,7 +178,7 @@ proc start*(host: var NodeHost, wipeDb: bool = false) =
   let callbacks = RaftHostCallbacks(
     sendRpc: proc(target: RaftNodeId, rpc: RaftRpcMessage) =
       if hostRef.alive:
-        hostRef.net.send(rpc, hostRef.id, target, hostRef.clock.nowMs),
+        hostRef.net.send(hostRef.clock, rpc, hostRef.id, target),
     persistTerm: proc(term: RaftNodeTerm) = hostRef.storage.persistTerm(hostRef.id, term),
     persistVotedFor: proc(votedFor: Option[RaftNodeId]) = hostRef.storage.persistVotedFor(hostRef.id, votedFor),
     persistLogEntry: proc(entry: LogEntry) = hostRef.storage.persistLogEntry(hostRef.id, entry),
@@ -170,7 +193,14 @@ proc start*(host: var NodeHost, wipeDb: bool = false) =
         bytes[i] = byte(hostRef.rng.next() and 0xFF)
       return bytes,
     randomInt: proc(max: int): int = hostRef.rng.nextInt(max),
-    getTime: proc(): int64 = hostRef.clock.nowMs
+    getTime: proc(): int64 = hostRef.clock.nowMs,
+    onCommitted: proc(nodeId: RaftNodeId, entry: LogEntry) =
+      # Record committed event to JSON writer
+      if hostRef.committedEventCallback.isSome:
+        hostRef.committedEventCallback.get()(hostRef.clock.nowMs, nodeId, entry)
+      # Forward to event log callback if available
+      if hostRef.eventLogCallback.isSome:
+        hostRef.eventLogCallback.get()(EntryCommitted, nodeId, fmt"Entry {entry.index} committed", fmt"term={entry.term}")
   )
 
   # Re-initialize the Raft implementation (this will load persisted state)
@@ -192,12 +222,24 @@ proc isAlive*(host: NodeHost): bool =
 
 proc getState*(host: NodeHost): NodeState =
   ## Get current Raft state (for testing/invariants)
-  host.raft.getState()
+  var state = host.raft.getState()
+  # Add the generation counters from the host
+  state.electionTimerGeneration = host.electionTimerGeneration
+  state.heartbeatTimerGeneration = host.heartbeatTimerGeneration
+  return state
 
 # Timer callbacks (to be used by Raft implementation)
 proc scheduleTimer*(host: NodeHost, delayMs: int64, callback: TimerCallback): TimerId =
   ## Schedule a timer (election timeout, heartbeat, etc.)
   host.clock.scheduleTimer(delayMs, callback)
+
+proc scheduleVersionedTimer*(host: var NodeHost, delayMs: int64, callback: TimerCallback, kind: TimerKind): TimerId =
+  ## Schedule a timer with type information (for future versioning support)
+  return host.clock.scheduleTimer(delayMs, callback, kind, host.id)
+
+proc cancelVersionedTimer*(host: var NodeHost, timerId: TimerId, kind: TimerKind): bool =
+  ## Cancel a timer (versioning not yet implemented, just basic cancellation)
+  return host.clock.cancelTimer(timerId)
 
 proc cancelTimer*(host: NodeHost, timerId: TimerId): bool =
   ## Cancel a scheduled timer

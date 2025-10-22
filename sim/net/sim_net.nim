@@ -10,6 +10,7 @@ import std/math
 import std/strformat
 
 import ../core/sim_rng
+import ../core/sim_clock
 import ../core/types
 import ../../src/raft/types
 import ../../src/raft/consensus_state_machine
@@ -34,11 +35,11 @@ type
     rng*: SimRng
     defaultPolicy*: NetFaultPolicy
     linkPolicies*: Table[(RaftNodeId, RaftNodeId), NetFaultPolicy]
-    eventQueue*: Deque[NetEvent]  # sorted by deliverAt
     partitions*: seq[Partition]
     droppedCount*: uint64
     duplicatedCount*: uint64
     deliveredCount*: uint64
+    # Note: eventQueue removed - now uses unified event system in SimClock
 
 proc newNetFaultPolicy*(baseLatency: int64 = 20, jitter: int64 = 10,
                        p99Latency: int64 = 120, dropPercent: float = 0.02,
@@ -57,7 +58,6 @@ proc newSimNet*(rng: SimRng, defaultPolicy: NetFaultPolicy = newNetFaultPolicy()
     rng: rng,
     defaultPolicy: defaultPolicy,
     linkPolicies: initTable[(RaftNodeId, RaftNodeId), NetFaultPolicy](),
-    eventQueue: initDeque[NetEvent](),
     partitions: @[],
     droppedCount: 0,
     duplicatedCount: 0,
@@ -103,8 +103,9 @@ proc calculateLatency*(net: SimNet, fromNode, toNode: RaftNodeId): int64 =
 
   return max(latency, 1)  # minimum 1ms latency
 
-proc send*(net: SimNet, rpc: RaftRpcMessage, fromNode, toNode: RaftNodeId, sendTime: int64) =
+proc send*(net: SimNet, clock: SimClock, rpc: RaftRpcMessage, fromNode, toNode: RaftNodeId) =
   ## Send an RPC from one node to another, applying network faults
+  let sendTime = clock.nowMs
   let policy = net.getPolicy(fromNode, toNode)
 
   # Check if nodes can communicate (partition)
@@ -115,6 +116,7 @@ proc send*(net: SimNet, rpc: RaftRpcMessage, fromNode, toNode: RaftNodeId, sendT
   let rng = net.rng.rngFor("net-faults-" & fromNode.id & "-" & toNode.id)
 
   # Drop check
+
   if rng.bernoulli(policy.dropPercent):
     net.droppedCount += 1
     return
@@ -130,35 +132,39 @@ proc send*(net: SimNet, rpc: RaftRpcMessage, fromNode, toNode: RaftNodeId, sendT
     let reorderDelay = rng.nextInt(1, policy.reorderWindow + 1)
     deliverTime += int64(reorderDelay)
 
-  # Create and queue the event
-  let event = NetEvent(
+  # Create and schedule the network event
+  let networkData = NetworkEventData(
     fromNode: fromNode,
     toNode: toNode,
-    deliverAt: deliverTime,
     rpc: rpc,
     duplicate: false
   )
 
-  net.eventQueue.addLast(event)
+  let event = SimEvent(
+    deliverAt: deliverTime,
+    kind: NetworkEvent,
+    network: networkData
+  )
+
+  clock.scheduleEvent(event)
 
   # Add duplicate if needed
   if willDuplicate:
-    let dupEvent = NetEvent(
+    let dupNetworkData = NetworkEventData(
       fromNode: fromNode,
       toNode: toNode,
-      deliverAt: deliverTime + rng.nextInt(1, 11),  # duplicate within 10ms
       rpc: rpc,
       duplicate: true
     )
-    net.eventQueue.addLast(dupEvent)
-    net.duplicatedCount += 1
 
-proc pump*(net: SimNet, currentTime: int64, deliverCallback: proc(event: NetEvent)) =
-  ## Deliver all events that are due at or before currentTime
-  while net.eventQueue.len > 0 and net.eventQueue[0].deliverAt <= currentTime:
-    let event = net.eventQueue.popFirst()
-    deliverCallback(event)
-    net.deliveredCount += 1
+    let dupEvent = SimEvent(
+      deliverAt: deliverTime + rng.nextInt(1, 11),  # duplicate within 10ms
+      kind: NetworkEvent,
+      network: dupNetworkData
+    )
+
+    clock.scheduleEvent(dupEvent)
+    net.duplicatedCount += 1
 
 proc addPartition*(net: SimNet, partition: Partition) =
   ## Add a partition configuration
@@ -170,4 +176,17 @@ proc clearPartitions*(net: SimNet) =
 
 proc pendingEvents*(net: SimNet): int =
   ## Return number of pending network events
-  net.eventQueue.len
+  # Note: This method is deprecated - use clock.events.len for total pending events
+  0  # Network events are now managed by SimClock
+
+proc deliverNetworkEvent*(net: var SimNet, event: SimEvent): NetEvent =
+  ## Convert a SimEvent to NetEvent for backward compatibility and increment counters
+  assert event.kind == NetworkEvent
+  net.deliveredCount += 1
+  return NetEvent(
+    fromNode: event.network.fromNode,
+    toNode: event.network.toNode,
+    deliverAt: event.deliverAt,
+    rpc: event.network.rpc,
+    duplicate: event.network.duplicate
+  )
