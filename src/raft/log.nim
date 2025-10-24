@@ -2,6 +2,14 @@ import types
 import std/[strformat, options]
 import strutils
 
+# Entry ID assignment for simulation (only used in sim mode)
+# Use log index as ID to ensure monotonic ordering across restarts
+func getNextEntryId*(logIndex: RaftLogIndex): int =
+  when defined(sim):
+    return logIndex.int
+  else:
+    return 0
+
 type
   RaftLogEntryType* = enum
     rletCommand = 0
@@ -25,6 +33,7 @@ type
     of rletCommand: command*: Command
     of rletConfig: config*: RaftConfig
     of rletEmpty: discard
+    id*: int  # unique entry ID for simulation/debugging
 
   RaftSnapshot* = object
     index*: RaftLogIndex
@@ -120,6 +129,8 @@ func getEntryByIndex*(rf: RaftLog, index: RaftLogIndex): LogEntry =
   rf.logEntries[index - rf.firstIndex]
 
 func append(rf: var RaftLog, entry: LogEntry) =
+  doAssert entry.index == rf.nextIndex,
+    fmt"invalid log index: got {entry.index}, expected {rf.nextIndex}"
   rf.logEntries.add(entry)
   if entry.kind == rletConfig:
     rf.prevConfigIndex = rf.lastConfigIndex
@@ -133,11 +144,12 @@ func appendAsLeader*(rf: var RaftLog, entry: LogEntry) =
   rf.checkInvariant()
 
 func appendAsFollower*(rf: var RaftLog, entry: LogEntry) =
+  
   if entry.index < rf.firstIndex:
     return
   if entry.index <= rf.lastIndex:
-    let existingEntryOpt = rf.getEntryByIndex(entry.index)
-    if existingEntryOpt.term == entry.term:
+    let existingEntry = rf.getEntryByIndex(entry.index)
+    if existingEntry.term == entry.term:
       # Entry already exists with the same term; skip
       return
     rf.truncateUncommitted(entry.index)
