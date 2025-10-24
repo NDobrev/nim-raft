@@ -91,7 +91,8 @@ proc canCommunicate*(net: SimNet, fromNode, toNode: RaftNodeId, atTime: int64): 
 proc calculateLatency*(net: SimNet, fromNode, toNode: RaftNodeId): int64 =
   ## Calculate delivery latency for a message, including faults
   let policy = net.getPolicy(fromNode, toNode)
-  let rng = net.rng.rngFor("net-latency")
+  # Use per-link RNG to keep latency distributions stable per link
+  let rng = net.rng.rngFor("latency-" & fromNode.id & "-" & toNode.id)
 
   # Base latency + jitter
   let jitter = rng.nextInt(-policy.latencyJitter, policy.latencyJitter + 1)

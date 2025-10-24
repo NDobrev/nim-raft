@@ -11,7 +11,7 @@ import types
 import std/strformat
 
 type
-  SchedulerCallback* = proc() {.gcsafe, closure.}
+  SchedulerCallback* = proc(id: TimerId) {.gcsafe, closure.}
 
   PeriodicTask* = object
     id*: TimerId
@@ -34,7 +34,7 @@ proc newSimScheduler*(clock: SimClock): SimScheduler =
 proc scheduleOnce*(scheduler: SimScheduler, delayMs: int64,
                   callback: SchedulerCallback): TimerId =
   ## Schedule a one-time callback after delayMs
-  scheduler.clock.scheduleTimer(delayMs, proc(id: TimerId) = callback())
+  scheduler.clock.scheduleTimer(delayMs, proc(id: TimerId) = callback(id))
 
 proc schedulePeriodic*(scheduler: SimScheduler, name: string, intervalMs: int64,
                       callback: SchedulerCallback): TimerId =
@@ -45,12 +45,13 @@ proc schedulePeriodic*(scheduler: SimScheduler, name: string, intervalMs: int64,
     let oldTask = scheduler.periodicTasks[name]
     discard scheduler.clock.cancelTimer(oldTask.id)
 
-  # Create the periodic callback that executes the user callback and reschedules itself
+  # Create the periodic callback that executes the user callback.
+  # SimClock will take care of rescheduling periodic timers; do not self-reschedule here.
   proc periodicCallback(id: TimerId) {.gcsafe.} =
     if scheduler.periodicTasks.contains(name):
-      var task = scheduler.periodicTasks[name]
+      let task = scheduler.periodicTasks[name]
       if task.active:
-        task.callback()
+        task.callback(task.id)
 
   let taskId = scheduler.clock.scheduleTimer(intervalMs, periodicCallback, periodic = true, interval = intervalMs)
 
@@ -92,20 +93,15 @@ proc resumePeriodic*(scheduler: SimScheduler, name: string): bool =
 
   var task = scheduler.periodicTasks[name]
   if not task.active:
-    task.id = scheduler.clock.scheduleTimer(task.interval, proc(id: TimerId) =
+    # Schedule a periodic timer that invokes the stored callback; do not self-reschedule.
+    proc periodicCallback(id: TimerId) {.gcsafe.} =
       if scheduler.periodicTasks.contains(name):
-        var t = scheduler.periodicTasks[name]
+        let t = scheduler.periodicTasks[name]
         if t.active:
-          t.callback()
-          # Reschedule
-          t.id = scheduler.clock.scheduleTimer(t.interval, proc(newId: TimerId) =
-            if scheduler.periodicTasks.contains(name):
-              var nt = scheduler.periodicTasks[name]
-              nt.id = newId
-              scheduler.periodicTasks[name] = nt
-          , periodic = true, interval = t.interval)
-          scheduler.periodicTasks[name] = t
-    , periodic = true, interval = task.interval)
+          t.callback(t.id)
+
+    task.id = scheduler.clock.scheduleTimer(task.interval, periodicCallback,
+      periodic = true, interval = task.interval)
     task.active = true
     scheduler.periodicTasks[name] = task
   return true

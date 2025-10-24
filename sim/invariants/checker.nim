@@ -81,7 +81,7 @@ proc checkElectionSafety*(checker: InvariantsChecker, nodes: seq[NodeHost], curr
         fmt"Multiple leaders in term {term}: {leaders}"
       )
 
-proc checkLogMatching*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
+proc checkLogMatching*(checker: InvariantsChecker, nodes: seq[NodeHost], storage: SimStorage, currentTime: int64) =
   ## Check Log Matching: committed entries must be identical across all nodes
   # Find the minimum commit index across all nodes
   var minCommitIndex = RaftLogIndex.high
@@ -97,20 +97,29 @@ proc checkLogMatching*(checker: InvariantsChecker, nodes: seq[NodeHost], current
     for node in nodes:
       let state = node.getState()
       if state.commitIndex >= index:
-        # Node should have this committed entry
-        let entryOpt = state.log.entryAt(index)
-        if entryOpt.isSome:
-          let entry = entryOpt.get()
-          let entryStr = fmt"term:{entry.term},kind:{entry.kind}"
-          if not entriesAtIndex.contains(entryStr):
-            entriesAtIndex[entryStr] = @[]
-          entriesAtIndex[entryStr].add(state.id)
+        # Node should have this committed entry. If the node has a snapshot covering
+        # this index, treat it as present (snapshots elide older log entries).
+        let snap = storage.getSnapshot(state.id)
+        if state.snapshotIndex >= index or (snap.isSome and snap.get().lastIncludedIndex >= index):
+          # Covered by snapshot - consider this entry matched and skip explicit compare
+          discard
         else:
-          # Node is missing a committed entry - this is a violation
-          checker.recordViolation(currentTime,
-            "Log Matching Violation",
-            fmt"Node {state.id} missing committed entry at index {index}"
-          )
+          let entryOpt = state.log.entryAt(index)
+          if entryOpt.isSome:
+            let entry = entryOpt.get()
+            let entryStr = fmt"term:{entry.term},kind:{entry.kind}"
+            if not entriesAtIndex.contains(entryStr):
+              entriesAtIndex[entryStr] = @[]
+            entriesAtIndex[entryStr].add(state.id)
+          else:
+            # If the entry is not in the in-memory log and the log starts after
+            # this index (implying a local snapshot), treat as covered by snapshot.
+            let coveredByLocalSnapshot = (state.log.len == 0) or (state.log.len > 0 and index < state.log[0].index)
+            if not coveredByLocalSnapshot:
+              checker.recordViolation(currentTime,
+                "Log Matching Violation",
+                fmt"Node {state.id} missing committed entry at index {index}"
+              )
 
     # Check for conflicts at this committed index
     if entriesAtIndex.len > 1:
@@ -152,7 +161,7 @@ proc checkStateMachineSafety*(checker: InvariantsChecker, nodes: seq[NodeHost], 
           fmt"Node {state.id} lastApplied ({state.lastApplied}) < commitIndex ({state.commitIndex})"
         )
 
-proc checkLeaderCompleteness*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
+proc checkLeaderCompleteness*(checker: InvariantsChecker, nodes: seq[NodeHost], storage: SimStorage, currentTime: int64) =
   ## Check Leader Completeness: leaders have all committed entries
   for node in nodes:
     let state = node.getState()
@@ -160,11 +169,18 @@ proc checkLeaderCompleteness*(checker: InvariantsChecker, nodes: seq[NodeHost], 
       # Check that leader has all entries up to commitIndex
       var hasAllEntries = true
       for i in 1..state.commitIndex.int:
-        let found = state.log.anyIt(it.index == RaftLogIndex(i))
-        if not found:
-          hasAllEntries = false
-          echo fmt"Leader {state.id} missing committed entry at index {i} in log: {state.log}"
-          break
+        let idx = RaftLogIndex(i)
+        var covered = state.snapshotIndex >= idx
+        if not covered:
+          let snap = storage.getSnapshot(state.id)
+          if snap.isSome and snap.get().lastIncludedIndex >= idx:
+            covered = true
+        if not covered:
+          let found = state.log.anyIt(it.index == idx)
+          if not found:
+            hasAllEntries = false
+            echo fmt"Leader {state.id} missing committed entry at index {i} in log: {state.log}"
+            break
 
       if not hasAllEntries:
         checker.recordViolation(currentTime,
@@ -188,17 +204,24 @@ proc checkSnapshotSanity*(checker: InvariantsChecker, nodes: seq[NodeHost], stor
             fmt"Node {node.id} has entry at index {entry.index} <= snapshot index {snapIndex}"
           )
 
-proc checkIndexValidity*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
+proc checkIndexValidity*(checker: InvariantsChecker, nodes: seq[NodeHost], storage: SimStorage, currentTime: int64) =
   ## Check Log Index Validity: commitIndex and lastApplied within log bounds, no gaps
   for node in nodes:
     let state = node.getState()
     let logLen = state.log.len
+    # Compute snapshot-aware last index bound
+    var snapIdx = state.snapshotIndex
+    if snapIdx == RaftLogIndex(0):
+      let snap = storage.getSnapshot(state.id)
+      if snap.isSome:
+        snapIdx = snap.get().lastIncludedIndex
+    let lastLogIdx = if logLen > 0: state.log[^1].index else: snapIdx
 
-    # Check commitIndex bounds
-    if state.commitIndex.int > logLen:
+    # Check commitIndex bounds against snapshot-aware last index
+    if state.commitIndex > lastLogIdx:
       checker.recordViolation(currentTime,
         "Index Validity Violation",
-        fmt"Node {state.id} commitIndex={state.commitIndex} exceeds log length {logLen}"
+        fmt"Node {state.id} commitIndex={state.commitIndex} exceeds lastIndex {lastLogIdx} (logLen={logLen}, snapIdx={snapIdx})"
       )
 
     # Check lastApplied bounds
@@ -210,7 +233,7 @@ proc checkIndexValidity*(checker: InvariantsChecker, nodes: seq[NodeHost], curre
 
     # Check for gaps in log indices (skip if log is empty)
     if logLen > 0:
-      var expectedIndex = RaftLogIndex(1)
+      var expectedIndex = state.log[0].index
       for entry in state.log:
         if entry.index != expectedIndex:
           checker.recordViolation(currentTime,
@@ -252,11 +275,19 @@ proc checkNoCommittedDeletion*(checker: InvariantsChecker, nodes: seq[NodeHost],
   for node in nodes:
     let state = node.getState()
 
-    # If log is empty but commitIndex > 0, entries were removed
+    # If log is empty but commitIndex > 0, verify snapshot justifies it
     if state.log.len == 0 and state.commitIndex > RaftLogIndex(0):
+      # Covered if either in-memory snapshot or storage snapshot includes commitIndex
+      let coveredByState = state.snapshotIndex >= state.commitIndex
+      let snap = storage.getSnapshot(state.id)
+      let coveredByStorage = snap.isSome and snap.get().lastIncludedIndex >= state.commitIndex
+      if coveredByState or coveredByStorage:
+        continue
+      # Otherwise, this indicates committed entries were deleted
+      let storageSnapTxt = (if snap.isSome: $snap.get().lastIncludedIndex else: "none")
       checker.recordViolation(currentTime,
         "No Committed Deletion Violation",
-        fmt"Node {state.id} has no log entries but commitIndex={state.commitIndex}"
+        fmt"Node {state.id} has no log entries but commitIndex={state.commitIndex} (stateSnap={state.snapshotIndex}, storageSnap={storageSnapTxt})"
       )
       continue
 
@@ -264,22 +295,28 @@ proc checkNoCommittedDeletion*(checker: InvariantsChecker, nodes: seq[NodeHost],
     if state.log.len > 0:
       let firstIndex = state.log[0].index
       if firstIndex > RaftLogIndex(1):
-        let snapshot = storage.getSnapshot(state.id)
-        if snapshot.isSome:
-          let snapIndex = snapshot.get().lastIncludedIndex
-          if firstIndex != snapIndex + 1:
+        # Prefer in-memory snapshot index from NodeState for justification
+        let stateSnapIdx = state.snapshotIndex
+        if stateSnapIdx > RaftLogIndex(0) and firstIndex == stateSnapIdx + 1:
+          discard  # Justified by in-memory snapshot
+        else:
+          # Fallback to storage snapshot
+          let snapshot = storage.getSnapshot(state.id)
+          if snapshot.isSome:
+            let snapIndex = snapshot.get().lastIncludedIndex
+            if firstIndex != snapIndex + 1:
+              checker.recordViolation(currentTime,
+                "No Committed Deletion Violation",
+                fmt"Node {state.id} log starts at {firstIndex} but snapshot covers {snapIndex} (stateSnap={stateSnapIdx})"
+              )
+          else:
+            # No snapshot but log doesn't start at 1
             checker.recordViolation(currentTime,
               "No Committed Deletion Violation",
-              fmt"Node {state.id} log starts at {firstIndex} but snapshot covers {snapIndex}"
+              fmt"Node {state.id} log starts at {firstIndex} with no snapshot justification (stateSnap={stateSnapIdx})"
             )
-        else:
-          # No snapshot but log doesn't start at 1
-          checker.recordViolation(currentTime,
-            "No Committed Deletion Violation",
-            fmt"Node {state.id} log starts at {firstIndex} with no snapshot justification"
-          )
 
-proc checkLogConsistency*(checker: InvariantsChecker, nodes: seq[NodeHost], currentTime: int64) =
+proc checkLogConsistency*(checker: InvariantsChecker, nodes: seq[NodeHost], storage: SimStorage, currentTime: int64) =
   ## Check Log Consistency (Accuracy): logs should agree on committed prefix
   # Similar to log matching but with more detailed accuracy checking
 
@@ -298,14 +335,21 @@ proc checkLogConsistency*(checker: InvariantsChecker, nodes: seq[NodeHost], curr
     for node in nodes:
       let state = node.getState()
       if state.commitIndex >= index:
-        let entryOpt = state.log.entryAt(index)
-        if entryOpt.isSome:
-          entriesAtIndex.add((entryOpt.get(), state.id))
+        let snap = storage.getSnapshot(state.id)
+        if state.snapshotIndex >= index or (snap.isSome and snap.get().lastIncludedIndex >= index):
+          # Covered by snapshot
+          discard
         else:
-          checker.recordViolation(currentTime,
-            "Log Consistency Violation",
-            fmt"Node {state.id} missing committed entry at index {index}"
-          )
+          let entryOpt = state.log.entryAt(index)
+          if entryOpt.isSome:
+            entriesAtIndex.add((entryOpt.get(), state.id))
+          else:
+            let coveredByLocalSnapshot = (state.log.len == 0) or (state.log.len > 0 and index < state.log[0].index)
+            if not coveredByLocalSnapshot:
+              checker.recordViolation(currentTime,
+                "Log Consistency Violation",
+                fmt"Node {state.id} missing committed entry at index {index}"
+              )
 
     # Check that all entries at this index are identical
     if entriesAtIndex.len > 1:
@@ -347,23 +391,23 @@ proc checkAll*(checker: InvariantsChecker, nodes: seq[NodeHost], storage: SimSto
   if checker.config.election_safety:
     checker.checkElectionSafety(nodes, currentTime)
   if checker.config.log_matching:
-    checker.checkLogMatching(nodes, currentTime)
+    checker.checkLogMatching(nodes, storage, currentTime)
   if checker.config.leader_append_only:
     checker.checkLeaderAppendOnly(nodes, currentTime)
   if checker.config.state_machine_safety:
     checker.checkStateMachineSafety(nodes, currentTime)
   if checker.config.leader_completeness:
-    checker.checkLeaderCompleteness(nodes, currentTime)
+    checker.checkLeaderCompleteness(nodes, storage, currentTime)
   if checker.config.snapshot_sanity:
     checker.checkSnapshotSanity(nodes, storage, currentTime)
   if checker.config.index_validity:
-    checker.checkIndexValidity(nodes, currentTime)
+    checker.checkIndexValidity(nodes, storage, currentTime)
   if checker.config.monotonic_ids:
     checker.checkMonotonicIds(nodes, currentTime)
   if checker.config.no_committed_deletion:
     checker.checkNoCommittedDeletion(nodes, storage, currentTime)
   if checker.config.log_consistency:
-    checker.checkLogConsistency(nodes, currentTime)
+    checker.checkLogConsistency(nodes, storage, currentTime)
   if checker.config.liveness:
     checker.checkLiveness(nodes, currentTime)
 

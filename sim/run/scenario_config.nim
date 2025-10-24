@@ -29,6 +29,7 @@ type
     enabled*: bool
     max_log_entries*: Option[int]
     or_bytes*: Option[int64]
+    snapshot_each_ms*: Option[int64]
 
   StorageConfig* = object
     durability*: StorageDurability
@@ -76,6 +77,9 @@ type
 
   NodeLifecycleConfig* = object
     restart_policies*: seq[RestartPolicy]
+    # Optional limiter: cap how many nodes may be wiped concurrently
+    # If none, no explicit cap is enforced by the runner
+    max_concurrent_wipes*: Option[int]
 
   # Fuzz configuration
   FuzzConfig* = object

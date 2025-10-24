@@ -8,7 +8,6 @@ import std/strformat
 import std/options
 
 import json_writer
-
 type
   CiSummary* = object
     status*: string  # "PASS" or "FAIL"

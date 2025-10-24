@@ -9,14 +9,16 @@ import std/tables
 import std/options
 import std/sequtils
 import std/algorithm
+import std/strformat
 
 import ../core/sim_rng
 import ../core/types
 import ../../src/raft/log
 import ../../src/raft/types
 
+
 type
-  NodeDisk* = object
+  NodeDisk* = ref object
     ## Persistent state for a single node
     currentTerm*: RaftNodeTerm
     votedFor*: Option[RaftNodeId]
@@ -33,7 +35,7 @@ type
     rng*: SimRng
     mode*: DurabilityMode
     nodes*: Table[RaftNodeId, NodeDisk]
-    pendingWrites*: Table[RaftNodeId, seq[proc()] ]  # for Async mode
+    pendingWrites*: Table[RaftNodeId, seq[proc() {.gcsafe.}] ]  # for Async mode
     tornWriteProb*: float  # probability of torn write in Torn mode
 
 proc newSimStorage*(rng: SimRng, mode: DurabilityMode = Durable,
@@ -42,11 +44,11 @@ proc newSimStorage*(rng: SimRng, mode: DurabilityMode = Durable,
     rng: rng,
     mode: mode,
     nodes: initTable[RaftNodeId, NodeDisk](),
-    pendingWrites: initTable[RaftNodeId, seq[proc()]](),
+    pendingWrites: initTable[RaftNodeId, seq[proc() {.gcsafe.}]](),
     tornWriteProb: tornWriteProb
   )
 
-proc getNodeDisk*(storage: SimStorage, nodeId: RaftNodeId): var NodeDisk =
+proc getNodeDisk*(storage: SimStorage, nodeId: RaftNodeId): NodeDisk =
   ## Get or create disk state for a node
   if not storage.nodes.contains(nodeId):
     storage.nodes[nodeId] = NodeDisk(
@@ -64,7 +66,7 @@ proc persistTerm*(storage: SimStorage, nodeId: RaftNodeId, term: RaftNodeTerm) =
     storage.getNodeDisk(nodeId).currentTerm = term
   of Async:
     # Add to pending writes, will be applied later
-    storage.pendingWrites.mgetOrPut(nodeId, @[]).add(proc() =
+    storage.pendingWrites.mgetOrPut(nodeId, @[]).add(proc() {.gcsafe.} =
       storage.getNodeDisk(nodeId).currentTerm = term)
   of Torn:
     # Immediate write but may be corrupted
@@ -80,7 +82,7 @@ proc persistVotedFor*(storage: SimStorage, nodeId: RaftNodeId, votedFor: Option[
   of Durable:
     storage.getNodeDisk(nodeId).votedFor = votedFor
   of Async:
-    storage.pendingWrites.mgetOrPut(nodeId, @[]).add(proc() =
+    storage.pendingWrites.mgetOrPut(nodeId, @[]).add(proc() {.gcsafe.} =
       storage.getNodeDisk(nodeId).votedFor = votedFor)
   of Torn:
     if storage.rng.rngFor("storage-torn").bernoulli(storage.tornWriteProb):
@@ -90,14 +92,33 @@ proc persistVotedFor*(storage: SimStorage, nodeId: RaftNodeId, votedFor: Option[
 
 proc persistLogEntry*(storage: SimStorage, nodeId: RaftNodeId, entry: LogEntry) =
   ## Append a log entry for a node
+  return
   case storage.mode:
   of Durable:
     var disk = storage.getNodeDisk(nodeId)
-    disk.log.add(entry)
+    # Truncate any conflicting suffix at or after entry.index, then append.
+    let startIdx = disk.log.lowerBound(
+      LogEntry(index: entry.index, term: RaftNodeTerm(0), kind: rletEmpty),
+      proc(a, b: LogEntry): int = cmp(a.index.int, b.index.int))
+    if startIdx < disk.log.len and disk.log[startIdx].index == entry.index and disk.log[startIdx].term == entry.term:
+      # Idempotent write; keep as-is
+      discard
+    else:
+      if startIdx < disk.log.len:
+        disk.log.setLen(startIdx)
+      disk.log.add(entry)
   of Async:
-    storage.pendingWrites.mgetOrPut(nodeId, @[]).add(proc() =
+    storage.pendingWrites.mgetOrPut(nodeId, @[]).add(proc() {.gcsafe.} =
       var disk = storage.getNodeDisk(nodeId)
-      disk.log.add(entry))
+      let startIdx = disk.log.lowerBound(
+        LogEntry(index: entry.index, term: RaftNodeTerm(0), kind: rletEmpty),
+        proc(a, b: LogEntry): int = cmp(a.index.int, b.index.int))
+      if startIdx < disk.log.len and disk.log[startIdx].index == entry.index and disk.log[startIdx].term == entry.term:
+        discard
+      else:
+        if startIdx < disk.log.len:
+          disk.log.setLen(startIdx)
+        disk.log.add(entry))
   of Torn:
     if storage.rng.rngFor("storage-torn").bernoulli(storage.tornWriteProb):
       # Partial write - add corrupted entry
@@ -106,10 +127,23 @@ proc persistLogEntry*(storage: SimStorage, nodeId: RaftNodeId, entry: LogEntry) 
         let maxLen = min(corrupted.command.data.len, storage.rng.rngFor("storage-torn").nextInt(1, corrupted.command.data.len + 1))
         corrupted.command.data.setLen(maxLen)
       var disk = storage.getNodeDisk(nodeId)
+      let startIdx = disk.log.lowerBound(
+        LogEntry(index: entry.index, term: RaftNodeTerm(0), kind: rletEmpty),
+        proc(a, b: LogEntry): int = cmp(a.index.int, b.index.int))
+      if startIdx < disk.log.len:
+        disk.log.setLen(startIdx)
       disk.log.add(corrupted)
     else:
       var disk = storage.getNodeDisk(nodeId)
-      disk.log.add(entry)
+      let startIdx = disk.log.lowerBound(
+        LogEntry(index: entry.index, term: RaftNodeTerm(0), kind: rletEmpty),
+        proc(a, b: LogEntry): int = cmp(a.index.int, b.index.int))
+      if startIdx < disk.log.len and disk.log[startIdx].index == entry.index and disk.log[startIdx].term == entry.term:
+        discard
+      else:
+        if startIdx < disk.log.len:
+          disk.log.setLen(startIdx)
+        disk.log.add(entry)
 
 proc truncateLog*(storage: SimStorage, nodeId: RaftNodeId, fromIndex: RaftLogIndex) =
   ## Truncate log from the given index onward
@@ -123,15 +157,18 @@ proc saveSnapshot*(storage: SimStorage, nodeId: RaftNodeId, snapshot: Snapshot) 
   ## Save a snapshot for a node
   var disk = storage.getNodeDisk(nodeId)
   disk.snapshot = some(snapshot)
+  
+
+  disk = storage.getNodeDisk(nodeId)
 
   # Truncate log entries that are now included in the snapshot
   let snapIndex = snapshot.lastIncludedIndex
   let startIdx = disk.log.lowerBound(LogEntry(index: snapIndex + 1, term: RaftNodeTerm(0), kind: rletEmpty),
     proc(a, b: LogEntry): int = cmp(a.index.int, b.index.int))
-  if startIdx < disk.log.len:
+  if startIdx > 0 and startIdx < disk.log.len:
     disk.log.delete(0, startIdx - 1)
 
-proc loadDisk*(storage: SimStorage, nodeId: RaftNodeId, wipe: bool = false): NodeDisk =
+proc loadDisk*(storage: SimStorage, nodeId: RaftNodeId, wipe: bool = false): NodeDisk {.gcsafe.} =
   ## Load disk state for a node, optionally wiping it (simulating DB loss)
   if wipe:
     # Simulate complete DB loss - return empty state
@@ -161,6 +198,7 @@ proc simulateCrash*(storage: SimStorage, nodeId: RaftNodeId, loseRecentWrites: i
   ## Simulate a crash during pending writes
   ## loseRecentWrites: number of recent writes to lose (for Async mode testing)
   if storage.pendingWrites.contains(nodeId):
+    echo fmt"Simulating crash for node {nodeId}"
     let pending = storage.pendingWrites[nodeId]
     let numToLose = min(loseRecentWrites, pending.len)
 

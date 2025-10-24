@@ -15,6 +15,7 @@ import ../../src/raft/log
 import ../../src/raft/consensus_state_machine
 import ../../src/raft/config
 import ../../src/raft/state
+import ../../src/raft/poll_state
 
 # Import simulation types and interfaces
 import ../core/types
@@ -42,6 +43,7 @@ type
     # Configuration tracking for stepdown logic
     currentConfig*: RaftConfig
     isVotingMember*: bool
+    lastSeenCommitIndex*: RaftLogIndex
 
 
 # Types are now used directly - no conversion needed
@@ -65,20 +67,26 @@ method initialize*(adapter: RaftSmAdapter, nodeId: RaftNodeId, callbacks: RaftHo
   adapter.currentConfig = initialConfig
   adapter.isVotingMember = true  # Start as voting member
 
-  # Create initial log with empty snapshot
-  let initialSnapshot = RaftSnapshot(
-    index: 0,
-    term: 0,
-    config: initialConfig
-  )
-  let initialLog = RaftLog.init(initialSnapshot)
+  # Load persisted disk state (term, votedFor, log). Snapshot ignored for now.
+  var persisted = adapter.callbacks.loadDisk(false)
+
+  #adapter.callbacks.recordSimLog(NodeLifecycle, fmt"Node {nodeId} initializing, persisted={persisted}")
+  # Create initial log snapshot from persisted snapshot if available
+  let initialSnapshot =
+    if persisted.snapshot.isSome:
+      let s = persisted.snapshot.get()
+      RaftSnapshot(index: s.lastIncludedIndex, term: s.lastIncludedTerm, config: initialConfig)
+    else:
+      RaftSnapshot(index: 0, term: 0, config: initialConfig)
+  let initialLog = RaftLog.init(initialSnapshot, persisted.log)
+
 
   # Create RaftStateMachineRef with correct initial time
   let initialTimeMs = adapter.callbacks.getTime()
   let initialNow = times.fromUnix(initialTimeMs div 1000).utc + times.initDuration(milliseconds = initialTimeMs mod 1000)
   adapter.raft = RaftStateMachineRef.new(
     id = nodeId,
-    currentTerm = 0,
+    currentTerm = persisted.currentTerm,
     log = initialLog,
     commitIndex = 0,
     now = initialNow,
@@ -86,6 +94,9 @@ method initialize*(adapter: RaftSmAdapter, nodeId: RaftNodeId, callbacks: RaftHo
     heartbeatTime = times.initDuration(milliseconds = adapter.heartbeatTimeoutMs)
   )
   adapter.lastPolledTime = adapter.callbacks.getTime()
+  # Reset commit-index tracker across (re)initializations so we don't
+  # compare against a previous process epoch after restart/wipe.
+  adapter.lastSeenCommitIndex = adapter.raft.commitIndex
 
 method step*(adapter: RaftSmAdapter, rpc: RaftRpcMessage) =
   ## Process an incoming RPC message
@@ -94,6 +105,67 @@ method step*(adapter: RaftSmAdapter, rpc: RaftRpcMessage) =
   # Convert current time to DateTime for raft (include milliseconds)
   let now = times.fromUnix(currentTimeMs div 1000).utc + times.initDuration(milliseconds = currentTimeMs mod 1000)
   adapter.raft.advance(rpc, now)
+
+  # Poll once to surface outputs produced by this RPC (e.g., InstallSnapshot)
+  let output = adapter.raft.poll()
+
+  # Sanity: a leader's commitIndex must not decrease within a single
+  # process epoch. After restart/wipe, lastSeenCommitIndex is reset in initialize.
+  if adapter.raft.isLeader and adapter.raft.commitIndex < adapter.lastSeenCommitIndex:
+    # Log commit index decrease to eventTrace for debugging
+    if adapter.callbacks.recordDebugLog != nil:
+      let debugEntry = DebugLogEntry(
+        level: DebugLogLevel.Warning,
+        time: times.fromUnix(currentTimeMs div 1000).utc + times.initDuration(milliseconds = currentTimeMs mod 1000),
+        nodeId: adapter.nodeId,
+        term: adapter.raft.term,
+        state: adapter.raft.state.state,
+        msg: fmt"Commit index decreased on leader: {adapter.lastSeenCommitIndex} -> {adapter.raft.commitIndex}"
+      )
+      adapter.callbacks.recordDebugLog(debugEntry)
+  if adapter.raft.commitIndex > adapter.lastSeenCommitIndex:
+    adapter.lastSeenCommitIndex = adapter.raft.commitIndex
+  
+
+  # Forward internal debug logs to event trace (ring buffer) if available
+  if output.debugLogs.len > 0 and adapter.callbacks.recordDebugLog != nil:
+    for d in output.debugLogs:
+      adapter.callbacks.recordDebugLog(d)
+
+  # Send any outgoing messages immediately
+  for msg in output.messages:
+    adapter.callbacks.sendRpc(msg.receiver, msg)
+
+  # Apply any committed entries to storage/metrics
+  for entry in output.committed:
+    # Record committed event for all kinds to preserve first-commit order per index
+    if adapter.callbacks.onCommitted != nil:
+      adapter.callbacks.onCommitted(adapter.nodeId, entry)
+    if entry.kind == rletConfig:
+      adapter.currentConfig = entry.config
+      adapter.isVotingMember = entry.config.contains(adapter.nodeId)
+      if not adapter.isVotingMember and adapter.raft.state.state == RaftNodeState.rnsLeader:
+        # Node stepping down - removed from configuration
+        # Could log to eventTrace if needed for debugging
+        discard
+
+  # Persist any new log entries
+  for entry in output.logEntries:
+    adapter.callbacks.persistLogEntry(entry)
+
+  # Keep term/votedFor durable
+  adapter.callbacks.persistTerm(adapter.raft.term)
+  adapter.callbacks.persistVotedFor(output.votedFor)
+
+  # Persist any applied snapshot immediately to avoid races
+  if output.applyedSnapshots.isSome:
+    let snap = output.applyedSnapshots.get()
+    let simSnap = Snapshot(
+      lastIncludedIndex: snap.index,
+      lastIncludedTerm: snap.term,
+      data: @[]
+    )
+    adapter.callbacks.saveSnapshot(simSnap)
 
 method tick*(adapter: RaftSmAdapter) =
   ## Process a timer tick
@@ -106,19 +178,21 @@ method tick*(adapter: RaftSmAdapter) =
   # Poll the state machine to get any pending messages and apply commits
   let output = adapter.raft.poll()
 
+  # Forward internal debug logs to event trace (ring buffer) if available
+  if output.debugLogs.len > 0 and adapter.callbacks.recordDebugLog != nil:
+    for d in output.debugLogs:
+      adapter.callbacks.recordDebugLog(d)
+
   # Send any outgoing messages
   for msg in output.messages:
     adapter.callbacks.sendRpc(msg.receiver, msg)
 
   # Apply any committed entries to storage
   for entry in output.committed:
-    if entry.kind == rletCommand:
-      # Record committed event for metrics
-      if adapter.callbacks.onCommitted != nil:
-        adapter.callbacks.onCommitted(adapter.nodeId, entry)
-      # In a real implementation, this would apply the command to the state machine
-      discard
-    elif entry.kind == rletConfig:
+    # Record committed event for metrics (all kinds)
+    if adapter.callbacks.onCommitted != nil:
+      adapter.callbacks.onCommitted(adapter.nodeId, entry)
+    if entry.kind == rletConfig:
       # Update current configuration
       adapter.currentConfig = entry.config
       # Check if this node is still a voting member
@@ -126,18 +200,29 @@ method tick*(adapter: RaftSmAdapter) =
 
       # If this node is no longer in the configuration and was leader, it should step down
       if not adapter.isVotingMember and adapter.raft.state.state == RaftNodeState.rnsLeader:
-        # The core Raft implementation should handle stepdown, but we can log it
-        echo fmt"Node {adapter.nodeId} stepping down: removed from configuration"
+        # The core Raft implementation should handle stepdown
+        # Could log to eventTrace if needed for debugging
+        discard
 
   # Persist any new log entries
   for entry in output.logEntries:
     adapter.callbacks.persistLogEntry(entry)
 
   # Update term and votedFor if changed
-  if output.term != adapter.raft.term:
-    adapter.callbacks.persistTerm(RaftNodeTerm(output.term))
+  # Persist current term on every tick to ensure durability across restarts
+  adapter.callbacks.persistTerm(adapter.raft.term)
 
   adapter.callbacks.persistVotedFor(output.votedFor)
+
+  # Persist snapshots applied by the core (now exposed via applyedSnapshots)
+  if output.applyedSnapshots.isSome:
+    let snap = output.applyedSnapshots.get()
+    let simSnap = Snapshot(
+      lastIncludedIndex: snap.index,
+      lastIncludedTerm: snap.term,
+      data: @[]
+    )
+    adapter.callbacks.saveSnapshot(simSnap)
 
 method propose*(adapter: RaftSmAdapter, cmd: seq[byte]): bool =
   ## Propose a new command to the cluster
@@ -162,21 +247,22 @@ method getState*(adapter: RaftSmAdapter): NodeState =
              else:
                sim_types.Follower
 
-  # Log state when polled (for debugging)
-  let currentLeader = if adapter.raft.state.isFollower: adapter.raft.state.follower.leader else: RaftNodeId.empty
-
   # Collect log entries from the Raft log
   var logEntries: seq[LogEntry] = @[]
   let log = adapter.raft.log
   for i in log.firstIndex .. log.lastIndex:
     logEntries.add(log.getEntryByIndex(i))
 
-  # Poll to get current votedFor (this is a read-only operation for invariants)
-  let output = adapter.raft.poll()
-  let votedFor = output.votedFor
+  # Read votedFor from observed state to avoid poll() side effects
+  let vf = adapter.raft.observedState.votedFor()
+  let votedFor = if vf == RaftNodeId.empty: none(RaftNodeId) else: some(vf)
 
-  for debugMsg in output.debugLogs:
-    echo fmt"RAFT: Node {adapter.nodeId} {debugMsg.time} {debugMsg.state} {debugMsg.term} {debugMsg.level} {debugMsg.msg}"
+  # Diagnostic: detect inconsistent state where commitIndex exceeds raw lastIndex
+  let rawLastIdx = adapter.raft.log.lastIndex
+  let rawFirstIdx = adapter.raft.log.firstIndex
+  let rawSnapIdx = adapter.raft.log.snapshot.index
+  if adapter.raft.commitIndex > rawLastIdx:
+    echo fmt"[DEBUG] Node {adapter.nodeId} commitIndex({adapter.raft.commitIndex}) > rawLastIndex({rawLastIdx}); firstIndex={rawFirstIdx}, entriesCount={adapter.raft.log.entriesCount()}, snapshotIndex={rawSnapIdx}"
 
   NodeState(    
     id: adapter.nodeId,
@@ -186,6 +272,8 @@ method getState*(adapter: RaftSmAdapter): NodeState =
     log: logEntries,
     commitIndex: RaftLogIndex(adapter.raft.commitIndex),
     lastApplied: RaftLogIndex(adapter.raft.commitIndex),  # Simplified
+    snapshotIndex: adapter.raft.log.snapshot.index,
+    snapshotTerm: adapter.raft.log.snapshot.term,
     nextIndex: initTable[RaftNodeId, RaftLogIndex](),  # Would need to be populated from leader state
     matchIndex: initTable[RaftNodeId, RaftLogIndex]()   # Would need to be populated from leader state
   )
@@ -199,6 +287,30 @@ method getCommitIndex*(adapter: RaftSmAdapter): RaftLogIndex =
 method getLastApplied*(adapter: RaftSmAdapter): RaftLogIndex =
   ## Get last applied index
   RaftLogIndex(adapter.raft.commitIndex)  # Simplified
+
+method forceLocalSnapshot*(adapter: RaftSmAdapter, upTo: RaftLogIndex): bool =
+  ## Force a local snapshot up to the given index (bounded by commitIndex)
+  let snapIndex = min(upTo, RaftLogIndex(adapter.raft.commitIndex))
+  if snapIndex <= adapter.raft.log.snapshot.index:
+    return false
+  let termOpt = adapter.raft.log.termForIndex(snapIndex)
+  if termOpt.isNone:
+    return false
+  let snap = RaftSnapshot(
+    index: snapIndex,
+    term: termOpt.get(),
+    config: adapter.raft.log.configuration
+  )
+  let applied = adapter.raft.applySnapshot(snap, true)
+  if applied:
+    # Persist snapshot immediately to avoid races in invariants
+    let simSnap = Snapshot(
+      lastIncludedIndex: snap.index,
+      lastIncludedTerm: snap.term,
+      data: @[]
+    )
+    adapter.callbacks.saveSnapshot(simSnap)
+  return true
 
 proc newRaftSmAdapter*(config: ScenarioYaml, nodeId: RaftNodeId, electionRng: SimRng): RaftSmAdapter =
   ## Create a new RaftStateMachineRef adapter

@@ -113,7 +113,7 @@ type
     config*: Option[RaftConfig]
     votedFor*: Option[RaftNodeId]
     stateChange*: bool
-    applyedSnapshots: Option[RaftSnapshot]
+    applyedSnapshots*: Option[RaftSnapshot]
     snapshotsToDrop: seq[RaftSnapshot]
 
   RaftStateMachineRef* = ref object
@@ -167,7 +167,7 @@ func checkInvariants*(sm: RaftStateMachineRef) =
   doAssert sm.commitIndex <= sm.log.lastIndex,
     fmt"commit index {sm.commitIndex} beyond log {sm.log.lastIndex}"
 
-const loglevel {.intdefine.}: int = int(DebugLogLevel.Info)
+const loglevel {.intdefine.}: int = int(DebugLogLevel.Error)
 const pollCheckInvariants {.booldefine.} = false
 
 template addDebugLogEntry(
@@ -441,7 +441,7 @@ func applySnapshot*(sm: RaftStateMachineRef, snapshot: RaftSnapshot, local: bool
 
   let current = sm.log.snapshot
   if snapshot.index <= current.index or (not local and snapshot.index <= sm.commitIndex):
-    sm.debug "Ignore outdated snapshot " & $snapshot & " " & $current
+    sm.debug "Ignore outdated snapshot " & $snapshot & " " & $current & " " & $local
     sm.commitIndex = max(sm.commitIndex, snapshot.index)
     sm.checkInvariants()
     return true
@@ -474,10 +474,25 @@ func replicateTo*(sm: RaftStateMachineRef, follower: var RaftFollowerProgressTra
   #sm.debug "Replicate to " & $follower[]
   if not previousTerm.isSome:
     sm.debug fmt"nextIndex={follower.nextIndex - 1} lastIndex={sm.log.lastIndex} firstIndex={sm.log.firstIndex} entriesCount={sm.log.entriesCount}"
-    let snapshot = sm.log.snapshot
-    follower.becomeSnapshot(snapshot.index)
-    sm.sendTo(follower.id, RaftInstallSnapshot(term: sm.term, snapshot: snapshot))
-    return
+    
+    # Check if we need to send a snapshot or if follower just needs to start from beginning
+    let prevIndex = follower.nextIndex - 1
+    if prevIndex < sm.log.snapshot.index:
+      # Follower's log is behind our snapshot - send snapshot
+      let snapshot = sm.log.snapshot
+      follower.becomeSnapshot(snapshot.index)
+      sm.sendTo(follower.id, RaftInstallSnapshot(term: sm.term, snapshot: snapshot))
+      return
+    else:
+      # Follower's log is ahead of our snapshot but we can't find the term
+      # This happens when follower has lost state and needs to start from beginning
+      # Reset follower's nextIndex to our firstIndex and continue with normal replication
+      sm.debug fmt"Resetting follower {follower.id.id} nextIndex from {follower.nextIndex} to {sm.log.firstIndex} (follower lost state)"
+      follower.nextIndex = sm.log.firstIndex
+      follower.becomeProbe()  # Reset to probe mode to discover follower's actual state
+      # Recalculate previousTerm after resetting nextIndex
+      previousTerm = sm.log.termForIndex(follower.nextIndex - 1)
+      # Continue with normal replication logic below
   
   # Check if we have entries to send or if empty messages are allowed
   let nextIdx = follower.nextIndex
@@ -485,8 +500,10 @@ func replicateTo*(sm: RaftStateMachineRef, follower: var RaftFollowerProgressTra
     # No entries to send and empty messages not allowed
     return
     
+  # Get the previous term for the AppendEntries request
+  let prevTerm = if previousTerm.isSome: previousTerm.get() else: RaftNodeTerm(0)
   var request = RaftRpcAppendRequest(
-    previousTerm: previousTerm.get(),
+    previousTerm: prevTerm,
     previousLogIndex: follower.nextIndex - 1,
     commitIndex: sm.commitIndex,
     entries: @[],
@@ -557,7 +574,7 @@ func addEntry(sm: RaftStateMachineRef, entry: LogEntry): LogEntry =
     tmpCfg.enterJoint(tmpEntry.config.currentSet)
     tmpEntry.config = tmpCfg
 
-  sm.debug "Adding entry to log: term=" & $entry.term & ", index=" & $entry.index & ", id=" & $entry.id & ", kind=" & $entry.kind
+  sm.debug "Adding entry to log: term=" & $tmpEntry.term & ", index=" & $tmpEntry.index &  ", kind=" & $tmpEntry.kind
   sm.log.appendAsLeader(tmpEntry)
   if entry.kind == rletConfig:
     sm.debug "Update leader config"
@@ -760,8 +777,8 @@ func poll*(sm: RaftStateMachineRef): RaftStateMachineRefOutput =
   when pollCheckInvariants:
     sm.log.checkInvariant()
 
-  if sm.state.isCandidate:
-    sm.debug("Current vote status " & $sm.candidate.votes.current)
+  #if sm.state.isCandidate:
+  #  sm.debug("Current vote status " & $sm.candidate.votes.current)
 
   sm.output.term = sm.term
   if sm.observedState.persistedIndex > sm.log.lastIndex:
@@ -819,6 +836,8 @@ func isStrayReject(
   ## 1. It claims mismatch at an index we know is matched (nonMatchingIndex <= matchIndex)
   ##    BUT: When matchIndex==0 we're in initial discovery, so nonMatchingIndex==0 is valid
   ## 2. Follower's log is shorter than what we know matched (lastIdx < matchIndex)
+  ##    BUT: If follower has empty log (lastIdx=0) and we think they have data (matchIndex>0),
+  ##    this indicates they restarted and we should reset their progress instead of treating as stray
   ## 3. In PROBE mode, rejection is not for the exact request we sent (nonMatchingIndex != nextIndex - 1)
   ## 4. In SNAPSHOT mode, any rejection is stray (we're waiting for snapshot transfer)
   
@@ -829,8 +848,12 @@ func isStrayReject(
     return true
   
   # If follower's log is shorter than what we know matched, it's stray  
+  # BUT: Special case - if follower has lost log entries (lastIdx < matchIndex),
+  # this indicates they restarted and we should reset their progress instead of treating as stray
   if rejected.lastIdx < follower.matchIndex:
-    return true
+    # Follower has restarted and lost log entries - this is not a stray rejection
+    # We need to reset their progress to handle the restart
+    return false
   
   # State-specific checks
   case follower.state:
@@ -897,9 +920,17 @@ func appendEntryReply*(
       return
     else:
       sm.debug fmt"Processing valid append reject from {fromId.id} (nonMatchingIndex={rej.nonMatchingIndex} matchIndex={follower.get().matchIndex} nextIndex={follower.get().nextIndex} state={follower.get().state})"
-    
-    # Move back to PROBE state on valid rejection
-    follower.get().becomeProbe()
+      
+      # Special case: If follower has restarted (lost log entries but we think they have data),
+      # reset their progress to handle the restart
+      if rej.lastIdx < follower.get().matchIndex:
+        sm.debug fmt"Detected follower {fromId.id} restart - resetting progress (old matchIndex={follower.get().matchIndex}, new lastIdx={rej.lastIdx})"
+        follower.get().matchIndex = rej.lastIdx
+        follower.get().nextIndex = rej.lastIdx + 1
+        follower.get().becomeProbe()
+      else:
+        # Move back to PROBE state on valid rejection
+        follower.get().becomeProbe()
     
     # Update nextIndex based on rejection hints
     if reply.rejected.nonMatchingIndex == 0 and reply.rejected.lastIdx == 0:
@@ -999,6 +1030,8 @@ func appendEntry*(
     sm.sendTo(fromId, responce)
     sm.warning fmt"AppendRequest from {fromId.id} rejected reason={matchReason} prevIndex={request.previousLogIndex} prevTerm={request.previousTerm} followerLastIndex={sm.log.lastIndex} snapshotIndex={sm.log.snapshot.index}"
     return
+
+  # Reference behavior: if prevLog matches, allow truncation/append regardless of local commit index
 
   for entry in request.entries:
     sm.log.appendAsFollower(entry)

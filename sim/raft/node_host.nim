@@ -5,6 +5,7 @@
 
 import std/options
 import std/strformat
+import std/times
 
 import ../core/sim_clock
 import ../core/sim_rng
@@ -21,7 +22,7 @@ type
 
   RpcEventCallback* = proc(timeMs: int64, rpc: RaftRpcMessage, fromNode, toNode: RaftNodeId) {.gcsafe, closure.}
 
-  EventLogCallback* = proc(kind: EventTraceKind, nodeId: RaftNodeId, description: string, details: string = "") {.gcsafe, closure.}
+  EventLogCallback* = proc(kind: EventTraceKind, timestamp: int64,nodeId: RaftNodeId, description: string, details: string = "") {.gcsafe, closure.}
 
   CommittedEventCallback* = proc(timeMs: int64, nodeId: RaftNodeId, entry: LogEntry) {.gcsafe, closure.}
 
@@ -45,6 +46,11 @@ type
 
     # Raft implementation
     raft*: RaftNode
+
+proc recordSimLog*(host: NodeHost, kind: EventTraceKind, description: string, details: string = "") =
+  ## Centralized simulation logging helper routed to the eventTrace sink
+  if host.eventLogCallback.isSome:
+    host.eventLogCallback.get()(kind, host.clock.nowMs, host.id, description, details)
 
 proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
                  rng: SimRng, storage: SimStorage, net: SimNet,
@@ -79,6 +85,18 @@ proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
         # Record the RPC event for statistics
         if host.rpcEventCallback.isSome:
           host.rpcEventCallback.get()(host.clock.nowMs, rpc, host.id, target)
+        # Also record to simulation event log for coherent trace
+        if host.eventLogCallback.isSome:
+          let rpcKind = case rpc.kind:
+            of VoteRequest: "VoteRequest"
+            of VoteReply: "VoteReply"
+            of AppendRequest: "AppendRequest"
+            of AppendReply: "AppendReply"
+            of InstallSnapshot: "InstallSnapshot"
+            of SnapshotReply: "SnapshotReply"
+          host.recordSimLog(MessageSend,
+            fmt"Sending {rpcKind} to {target}",
+            fmt"term={rpc.currentTerm}")
         host.net.send(host.clock, rpc, host.id, target),
     persistTerm: proc(term: RaftNodeTerm) = host.storage.persistTerm(host.id, term),
     persistVotedFor: proc(votedFor: Option[RaftNodeId]) = host.storage.persistVotedFor(host.id, votedFor),
@@ -86,7 +104,10 @@ proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
     truncateLog: proc(fromIndex: RaftLogIndex) = host.storage.truncateLog(host.id, fromIndex),
     saveSnapshot: proc(snapshot: Snapshot) = host.storage.saveSnapshot(host.id, snapshot),
     getSnapshot: proc(): Option[Snapshot] = host.storage.getSnapshot(host.id),
-    scheduleTimer: proc(delayMs: int64, callback: TimerCallback): TimerId = host.clock.scheduleTimer(delayMs, callback),
+    loadDisk: proc(wipe: bool): NodeDisk {.gcsafe.} = host.storage.loadDisk(host.id, wipe),
+    scheduleTimer: proc(delayMs: int64, callback: TimerCallback): TimerId =
+      # Pass node context so timer-fired events can be attributed
+      host.clock.scheduleTimer(delayMs, callback, CustomTimer, host.id),
     cancelTimer: proc(timerId: TimerId): bool = host.clock.cancelTimer(timerId),
     randomBytes: proc(n: int): seq[byte] =
       var bytes = newSeq[byte](n)
@@ -100,8 +121,13 @@ proc newNodeHost*(id: RaftNodeId, clock: SimClock, scheduler: SimScheduler,
       if host.committedEventCallback.isSome:
         host.committedEventCallback.get()(host.clock.nowMs, nodeId, entry)
       # Forward to event log callback if available
+      host.recordSimLog(EntryCommitted, fmt"Entry {entry.index} committed", fmt"term={entry.term}")
+    ,
+    recordDebugLog: proc(entry: DebugLogEntry) =
       if host.eventLogCallback.isSome:
-        host.eventLogCallback.get()(EntryCommitted, nodeId, fmt"Entry {entry.index} committed", fmt"term={entry.term}")
+        let desc = fmt"{entry.level}: {entry.msg}"
+        let details = "term=" & $entry.term & ", state=" & $entry.state & ", at=" & entry.time.format("YYYY:MM:dd:HH:mm:ss:fff")
+        host.eventLogCallback.get()(DebugLog, host.clock.nowMs, host.id, desc, details)
   )
 
   # Initialize the Raft implementation
@@ -151,9 +177,13 @@ proc sendRpc*(host: NodeHost, target: RaftNodeId, rpc: RaftRpcMessage) =
 proc stop*(host: var NodeHost) =
   ## Stop this node (simulates crash/failure)
   if not host.alive:
+    host.recordSimLog(NodeLifecycle, fmt"Node {host.id} already stopped")
     return
 
   host.alive = false
+
+  # Log lifecycle event
+  host.recordSimLog(NodeLifecycle, fmt"Node {host.id} stopping")
 
   # Notify lifecycle callback
   if host.lifecycleCallback.isSome:
@@ -167,8 +197,17 @@ proc stop*(host: var NodeHost) =
 
 proc start*(host: var NodeHost, wipeDb: bool = false) =
   ## Start/restart this node
+
+  if host.alive:
+    host.recordSimLog(NodeLifecycle, fmt"Node {host.id} already started")
+    return
+
   host.alive = true
 
+  # Log lifecycle event
+  host.recordSimLog(NodeLifecycle, fmt"Node {host.id} starting", fmt"wipeDb={wipeDb}")
+
+  #echo "Starting node ", host.id, "callstart: ", getStackTrace()
   # For restart, we need to reload persisted state
   # The Raft implementation will handle state restoration through its initialize method
   # We call initialize again to restore from disk state
@@ -178,6 +217,18 @@ proc start*(host: var NodeHost, wipeDb: bool = false) =
   let callbacks = RaftHostCallbacks(
     sendRpc: proc(target: RaftNodeId, rpc: RaftRpcMessage) =
       if hostRef.alive:
+        # Sim log + deliver
+        if hostRef.eventLogCallback.isSome:
+          let rpcKind = case rpc.kind:
+            of VoteRequest: "VoteRequest"
+            of VoteReply: "VoteReply"
+            of AppendRequest: "AppendRequest"
+            of AppendReply: "AppendReply"
+            of InstallSnapshot: "InstallSnapshot"
+            of SnapshotReply: "SnapshotReply"
+          hostRef.recordSimLog(MessageSend,
+            fmt"Sending {rpcKind} to {target}",
+            fmt"term={rpc.currentTerm}")
         hostRef.net.send(hostRef.clock, rpc, hostRef.id, target),
     persistTerm: proc(term: RaftNodeTerm) = hostRef.storage.persistTerm(hostRef.id, term),
     persistVotedFor: proc(votedFor: Option[RaftNodeId]) = hostRef.storage.persistVotedFor(hostRef.id, votedFor),
@@ -185,7 +236,9 @@ proc start*(host: var NodeHost, wipeDb: bool = false) =
     truncateLog: proc(fromIndex: RaftLogIndex) = hostRef.storage.truncateLog(hostRef.id, fromIndex),
     saveSnapshot: proc(snapshot: Snapshot) = hostRef.storage.saveSnapshot(hostRef.id, snapshot),
     getSnapshot: proc(): Option[Snapshot] = hostRef.storage.getSnapshot(hostRef.id),
-    scheduleTimer: proc(delayMs: int64, callback: TimerCallback): TimerId = hostRef.clock.scheduleTimer(delayMs, callback),
+    loadDisk: proc(wipe: bool): NodeDisk {.gcsafe.} = hostRef.storage.loadDisk(hostRef.id, wipeDb),
+    scheduleTimer: proc(delayMs: int64, callback: TimerCallback): TimerId =
+      hostRef.clock.scheduleTimer(delayMs, callback, CustomTimer, hostRef.id),
     cancelTimer: proc(timerId: TimerId): bool = hostRef.clock.cancelTimer(timerId),
     randomBytes: proc(n: int): seq[byte] =
       var bytes = newSeq[byte](n)
@@ -199,8 +252,13 @@ proc start*(host: var NodeHost, wipeDb: bool = false) =
       if hostRef.committedEventCallback.isSome:
         hostRef.committedEventCallback.get()(hostRef.clock.nowMs, nodeId, entry)
       # Forward to event log callback if available
+      hostRef.recordSimLog(EntryCommitted, fmt"Entry {entry.index} committed", fmt"term={entry.term}")
+    ,
+    recordDebugLog: proc(entry: DebugLogEntry) =
       if hostRef.eventLogCallback.isSome:
-        hostRef.eventLogCallback.get()(EntryCommitted, nodeId, fmt"Entry {entry.index} committed", fmt"term={entry.term}")
+        let desc = fmt"{entry.level}: {entry.msg}"
+        let details = "term=" & $entry.term & ", state=" & $entry.state & ", at=" & entry.time.format("YYYY:MM:dd:HH:mm:ss:fff")
+        hostRef.eventLogCallback.get()(DebugLog, hostRef.clock.nowMs, hostRef.id, desc, details)
   )
 
   # Re-initialize the Raft implementation (this will load persisted state)

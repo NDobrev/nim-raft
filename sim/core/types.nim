@@ -37,6 +37,8 @@ type
     log*: seq[LogEntry]
     commitIndex*: RaftLogIndex
     lastApplied*: RaftLogIndex
+    snapshotIndex*: RaftLogIndex
+    snapshotTerm*: RaftNodeTerm
     # Timer generation counters for versioning
     electionTimerGeneration*: int
     heartbeatTimerGeneration*: int
@@ -63,6 +65,8 @@ type
     cancelled*: bool
     periodic*: bool
     interval*: int64
+    # Node context for timer ownership (if applicable)
+    nodeId*: RaftNodeId
 
   NetworkEventData* = object
     fromNode*: RaftNodeId
@@ -164,6 +168,7 @@ type
     TimerFired
     NodeLifecycle
     InvariantCheck
+    DebugLog
 
   EventTraceEntry* = object
     timestamp*: int64
@@ -206,4 +211,3 @@ proc entryAt*(log: seq[LogEntry], index: RaftLogIndex): Option[LogEntry] =
     if entry.index == index:
       return some(entry)
   return none(LogEntry)
-

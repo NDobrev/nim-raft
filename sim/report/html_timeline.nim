@@ -7,7 +7,6 @@ import std/json
 import std/strformat
 import std/strutils
 import std/options
-
 import json_writer
 
 type
@@ -189,6 +188,13 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            z-index: 10;\n" &
            "        }\n" &
            "\n" &
+           "        .snapshot {\n" &
+           "            background: #f59e0b; /* amber */\n" &
+           "            height: 16px;\n" &
+           "            border-radius: 50%;\n" &
+           "            z-index: 12;\n" &
+           "        }\n" &
+           "\n" &
            "        .violation {\n" &
            "            background: #dc2626;\n" &
            "            height: 20px;\n" &
@@ -210,12 +216,29 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            z-index: 10;\n" &
            "        }\n" &
            "\n" &
+           "        .restart.wipe {\n" &
+           "            background: #b91c1c; /* darker for wiped restarts */\n" &
+           "            border: 2px solid #ffffff;\n" &
+           "        }\n" &
+           "\n" &
+           "        .down {\n" &
+           "            background: rgba(55, 65, 81, 0.25); /* semi-transparent gray */\n" &
+           "            position: absolute;\n" &
+           "            height: 40px;\n" &
+           "            border-radius: 4px;\n" &
+           "            z-index: 5;\n" &
+           "        }\n" &
+           "\n" &
            "        .committed {\n" &
            "            background: #ffb981;\n" &
            "            height: 16px;\n" &
            "            border-radius: 2px;\n" &
            "            z-index: 12;\n" &
-           "            opacity: 0.8;\n" &
+           "            opacity: 0.9;\n" &
+           "        }\n" &
+           "        .committed.recommit {\n" &
+           "            background: #f97316; /* darker orange for recommits */\n" &
+           "            border: 1px solid #7c2d12;\n" &
            "        }\n" &
            "\n" &
            "        .legend {\n" &
@@ -375,6 +398,10 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "                <div class=\"legend-color\" style=\"background: #7c3aed;\"></div>\n" &
            "                <span>Partitions</span>\n" &
            "            </div>\n" &
+           "            <div class=\"legend-item\">\n" &
+           "                <div class=\"legend-color\" style=\"background: rgba(55, 65, 81, 0.25);\"></div>\n" &
+           "                <span>Down (node stopped)</span>\n" &
+           "            </div>\n" &
            "        </div>\n" &
            "    </div>\n" &
            "\n" &
@@ -460,6 +487,7 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            let lastTerm = 0;\n" &
            "            let lastTime = 0;\n" &
            "            let lastMarkedCommitIndex = 0;\n" &
+           "            let lastAlive = true;\n" &
            "\n" &
            "            // Minimum width to ensure visibility (in pixels)\n" &
            "            const minWidthPx = 2;\n" &
@@ -468,54 +496,87 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "            const timelineWidth = canvasWidth - 80; // subtract label width\n" &
            "            const minWidthPercent = (minWidthPx / timelineWidth) * 100;\n" &
            "\n" &
-           "            // Draw role periods\n" &
+           "            // Draw role periods, skipping when node is down\n" &
            "            states.forEach((state, index) => {\n" &
            "                const node = state.nodes[state.nodes.findIndex(node => node.id === nodeId)];\n" &
            "                if (node) {\n" &
-           "                    if (lastRole === null) {\n" &
-           "                        // First state - initialize with current role\n" &
-           "                        lastRole = node.role;\n" &
-           "                        lastTerm = node.currentTerm;\n" &
-           "                        lastTime = 0; // Start from beginning\n" &
-           "                    } else if (lastRole !== node.role) {\n" &
-           "                        // End previous role period\n" &
-           "                        const duration = state.timeMs - lastTime;\n" &
-           "                        let width = (duration / currentMaxTime) * 100;\n" &
-           "                        // Ensure minimum width for visibility\n" &
-           "                        width = Math.max(width, minWidthPercent);\n" &
-           "                        const left = (lastTime / currentMaxTime) * 100;\n" &
-           "\n" &
-           "                        const roleDiv = document.createElement('div');\n" &
-           "                        roleDiv.className = `event ${lastRole}`;\n" &
-           "                        roleDiv.style.left = `${left}%`;\n" &
-           "                        roleDiv.style.width = `${width}%`;\n" &
-           "                        roleDiv.title = `${lastRole} (term ${lastTerm}) (${lastTime}-${state.timeMs}ms)`;\n" &
-           "                        timeline.appendChild(roleDiv);\n" &
-           "\n" &
-           "                        lastRole = node.role;\n" &
-           "                        lastTerm = node.currentTerm;\n" &
+           "                    const isAlive = ('alive' in node) ? node.alive : true;\n" &
+           "                    if (!isAlive) {\n" &
+           "                        // If the node just went down, close any open role segment\n" &
+           "                        if (lastRole !== null && lastAlive) {\n" &
+           "                            const duration = state.timeMs - lastTime;\n" &
+           "                            let width = (duration / currentMaxTime) * 100;\n" &
+           "                            width = Math.max(width, minWidthPercent);\n" &
+           "                            const left = (lastTime / currentMaxTime) * 100;\n" &
+           "                            const roleDiv = document.createElement('div');\n" &
+           "                            roleDiv.className = `event ${lastRole}`;\n" &
+           "                            // Hue variation for leaders by term\n" &
+           "                            if (lastRole === 'leader') {\n" &
+           "                                const hue = (lastTerm % 12) * 15;\n" &
+           "                                roleDiv.style.filter = `hue-rotate(${hue}deg)`;\n" &
+           "                                const label = document.createElement('div');\n" &
+           "                                label.style.position = 'absolute';\n" &
+           "                                label.style.fontSize = '10px';\n" &
+           "                                label.style.padding = '0 2px';\n" &
+           "                                label.textContent = `t${lastTerm}`;\n" &
+           "                                roleDiv.appendChild(label);\n" &
+           "                            }\n" &
+           "                            roleDiv.style.left = `${left}%`;\n" &
+           "                            roleDiv.style.width = `${width}%`;\n" &
+           "                            roleDiv.title = `${lastRole} (term ${lastTerm}) (${lastTime}-${state.timeMs}ms)`;\n" &
+           "                            timeline.appendChild(roleDiv);\n" &
+           "                        }\n" &
+           "                        lastRole = null;\n" &
+           "                        lastAlive = false;\n" &
            "                        lastTime = state.timeMs;\n" &
+           "                    } else {\n" &
+           "                        if (lastRole === null || !lastAlive) {\n" &
+           "                            // Start a new role period\n" &
+           "                            lastRole = node.role;\n" &
+           "                            lastTerm = node.currentTerm;\n" &
+           "                            // If we were down, start from this state's time\n" &
+           "                            lastTime = state.timeMs;\n" &
+           "                            lastAlive = true;\n" &
+           "                        } else if (lastRole !== node.role || lastTerm !== node.currentTerm) {\n" &
+           "                            // Role or term changed: close previous segment and start new one\n" &
+           "                            const duration = state.timeMs - lastTime;\n" &
+           "                            let width = (duration / currentMaxTime) * 100;\n" &
+           "                            width = Math.max(width, minWidthPercent);\n" &
+           "                            const left = (lastTime / currentMaxTime) * 100;\n" &
+           "                            const roleDiv = document.createElement('div');\n" &
+           "                            roleDiv.className = `event ${lastRole}`;\n" &
+           "                            if (lastRole === 'leader') {\n" &
+           "                                const hue = (lastTerm % 12) * 15;\n" &
+           "                                roleDiv.style.filter = `hue-rotate(${hue}deg)`;\n" &
+           "                                const label = document.createElement('div');\n" &
+           "                                label.style.position = 'absolute';\n" &
+           "                                label.style.fontSize = '10px';\n" &
+           "                                label.style.padding = '0 2px';\n" &
+           "                                label.textContent = `t${lastTerm}`;\n" &
+           "                                roleDiv.appendChild(label);\n" &
+           "                            }\n" &
+           "                            roleDiv.style.left = `${left}%`;\n" &
+           "                            roleDiv.style.width = `${width}%`;\n" &
+           "                            roleDiv.title = `${lastRole} (term ${lastTerm}) (${lastTime}-${state.timeMs}ms)`;\n" &
+           "                            timeline.appendChild(roleDiv);\n" &
+           "                            lastRole = node.role;\n" &
+           "                            lastTerm = node.currentTerm;\n" &
+           "                            lastTime = state.timeMs;\n" &
+           "                        }\n" &
            "                    }\n" &
            "\n" &
-           "                    // Draw individual commit markers for each newly committed entry\n" &
-           "                    if (showCommits.checked && node.commitIndex > lastMarkedCommitIndex) {\n" &
+           "                    // Draw commit advancement marker (based on commitIndex delta)\n" &
+           "                    // If commitIndex decreased (e.g., wiped restart), reset baseline to avoid bogus ranges\n" &
+           "                    if (node.commitIndex < lastMarkedCommitIndex) { lastMarkedCommitIndex = node.commitIndex; }\n" &
+           "                    if (isAlive && showCommits.checked && node.commitIndex > lastMarkedCommitIndex) {\n" &
            "                        const newCommits = node.commitIndex - lastMarkedCommitIndex;\n" &
-           "                        // Space out markers slightly to avoid overlap\n" &
-           "                        const spacing = Math.min(0.5, 2.0 / newCommits); // Max 2% spacing between markers\n" &
-           "                        \n" &
-           "                        for (let i = 0; i < newCommits; i++) {\n" &
-           "                            const entryIndex = lastMarkedCommitIndex + i + 1;\n" &
-           "                            const offset = i * spacing;\n" &
-           "                            const left = (state.timeMs / currentMaxTime) * 100 + offset;\n" &
-           "                            \n" &
-           "                            const commitDiv = document.createElement('div');\n" &
-           "                            commitDiv.className = 'event commit';\n" &
-           "                            commitDiv.style.left = `${Math.max(left - 0.5, 0)}%`;\n" &
-           "                            // Ensure minimum width for commit events too\n" &
-           "                            commitDiv.style.width = `${Math.max(1, minWidthPercent)}%`;\n" &
-           "                            commitDiv.title = `Entry ${entryIndex} committed at ${state.timeMs}ms`;\n" &
-           "                            timeline.appendChild(commitDiv);\n" &
-           "                        }\n" &
+           "                        const left = (state.timeMs / currentMaxTime) * 100;\n" &
+           "                        const commitDiv = document.createElement('div');\n" &
+           "                        commitDiv.className = 'event commit';\n" &
+           "                        commitDiv.style.left = `${Math.max(left - 0.5, 0)}%`;\n" &
+           "                        commitDiv.style.width = `${Math.max(1, minWidthPercent)}%`;\n" &
+           "                        commitDiv.title = `commitIndex +${newCommits} -> ${node.commitIndex} at ${state.timeMs}ms`;\n" &
+           "                        timeline.appendChild(commitDiv);\n" &
            "                        lastMarkedCommitIndex = node.commitIndex;\n" &
            "                    }\n" &
            "                }\n" &
@@ -527,17 +588,76 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "                    if (committedEvent.nodeId === nodeId && committedEvent.timeMs <= currentMaxTime) {\n" &
            "                        const left = (committedEvent.timeMs / currentMaxTime) * 100;\n" &
            "                        const committedDiv = document.createElement('div');\n" &
-           "                        committedDiv.className = 'event committed';\n" &
+           "                        committedDiv.className = 'event committed' + (committedEvent.recommit ? ' recommit' : '');\n" &
            "                        committedDiv.style.left = `${Math.max(left - 0.3, 0)}%`;\n" &
            "                        committedDiv.style.width = `${Math.max(0.6, minWidthPercent)}%`;\n" &
-           "                        committedDiv.title = `Entry ${committedEvent.entryIndex} (term ${committedEvent.entryTerm}) committed at ${committedEvent.timeMs}ms`;\n" &
+           "                        committedDiv.title = `Entry ${committedEvent.entryIndex} (term ${committedEvent.entryTerm}) ${committedEvent.recommit ? 'recommitted' : 'committed'} at ${committedEvent.timeMs}ms`;\n" &
            "                        timeline.appendChild(committedDiv);\n" &
            "                    }\n" &
            "                });\n" &
            "            }\n" &
            "\n" &
-           "            // Draw final role period\n" &
-           "            if (lastRole) {\n" &
+           "            // Draw node down intervals and restart/snapshot markers using faultEvents\n" &
+           "            const nodeFaults = (traceData.faultEvents || [])\n" &
+           "                .filter(e => e.timeMs <= currentMaxTime && e.details && e.details.nodeId === nodeId && (e.faultType === 'node_stop' || e.faultType === 'node_restart' || e.faultType === 'snapshot'))\n" &
+           "                .sort((a,b) => a.timeMs - b.timeMs);\n" &
+           "            let downFrom = null;\n" &
+           "            let wipeGeneration = 0; // increments on wiped restarts for this node\n" &
+           "            nodeFaults.forEach(ev => {\n" &
+           "                if (ev.faultType === 'node_stop' && downFrom === null) {\n" &
+           "                    downFrom = ev.timeMs;\n" &
+           "                } else if (ev.faultType === 'node_restart' && downFrom !== null) {\n" &
+           "                    const start = downFrom;\n" &
+           "                    const end = ev.timeMs;\n" &
+           "                    const left = (start / currentMaxTime) * 100;\n" &
+           "                    let width = ((end - start) / currentMaxTime) * 100;\n" &
+           "                    width = Math.max(width, minWidthPercent);\n" &
+           "                    const downDiv = document.createElement('div');\n" &
+           "                    downDiv.className = 'down';\n" &
+           "                    downDiv.style.left = `${left}%`;\n" &
+           "                    downDiv.style.width = `${width}%`;\n" &
+           "                    downDiv.title = `down (${start}-${end}ms)`;\n" &
+           "                    timeline.appendChild(downDiv);\n" &
+           "                    // Draw restart marker; highlight wipes\n" &
+           "                    const restartDiv = document.createElement('div');\n" &
+           "                    const wiped = !!(ev.details && ev.details.wipedDb);\n" &
+           "                    if (wiped) { wipeGeneration += 1; }\n" &
+           "                    restartDiv.className = 'event restart' + (wiped ? ' wipe' : '');\n" &
+           "                    const rleft = (ev.timeMs / currentMaxTime) * 100;\n" &
+           "                    restartDiv.style.left = `${Math.max(rleft - 0.3, 0)}%`;\n" &
+           "                    restartDiv.style.width = `${Math.max(0.8, minWidthPercent)}%`;\n" &
+           "                    restartDiv.title = `restart at ${ev.timeMs}ms (wipe: ${wiped}, gen: ${wipeGeneration})`;\n" &
+           "                    timeline.appendChild(restartDiv);\n" &
+           "                    downFrom = null;\n" &
+           "                }\n" &
+           "                // snapshot markers\n" &
+           "                if (ev.faultType === 'snapshot') {\n" &
+           "                    const left = (ev.timeMs / currentMaxTime) * 100;\n" &
+           "                    const snapDiv = document.createElement('div');\n" &
+           "                    snapDiv.className = 'event snapshot';\n" &
+           "                    snapDiv.style.left = `${Math.max(left - 0.3, 0)}%`;\n" &
+           "                    snapDiv.style.width = `${Math.max(0.8, minWidthPercent)}%`;\n" &
+           "                    const idx = ev.details && ev.details.index;\n" &
+           "                    const term = ev.details && ev.details.term;\n" &
+           "                    snapDiv.title = `snapshot at ${ev.timeMs}ms (idx ${idx}, term ${term}, gen ${wipeGeneration})`;\n" &
+           "                    timeline.appendChild(snapDiv);\n" &
+           "                }\n" &
+           "            });\n" &
+           "            // If node is still down at currentMaxTime, draw till the end\n" &
+           "            if (downFrom !== null) {\n" &
+           "                const left = (downFrom / currentMaxTime) * 100;\n" &
+           "                let width = ((currentMaxTime - downFrom) / currentMaxTime) * 100;\n" &
+           "                width = Math.max(width, minWidthPercent);\n" &
+           "                const downDiv = document.createElement('div');\n" &
+           "                downDiv.className = 'down';\n" &
+           "                downDiv.style.left = `${left}%`;\n" &
+           "                downDiv.style.width = `${width}%`;\n" &
+           "                downDiv.title = `down (${downFrom}-${currentMaxTime}ms)`;\n" &
+           "                timeline.appendChild(downDiv);\n" &
+           "            }\n" &
+           "\n" &
+           "            // Draw final role period (only if alive)\n" &
+           "            if (lastRole && lastAlive) {\n" &
            "                const duration = currentMaxTime - lastTime;\n" &
            "                let width = (duration / currentMaxTime) * 100;\n" &
            "                // Ensure minimum width for visibility\n" &
@@ -546,6 +666,16 @@ proc generateHtml*(generator: HtmlTimelineGenerator): string =
            "\n" &
            "                const roleDiv = document.createElement('div');\n" &
            "                roleDiv.className = `event ${lastRole}`;\n" &
+           "                if (lastRole === 'leader') {\n" &
+           "                    const hue = (lastTerm % 12) * 15;\n" &
+           "                    roleDiv.style.filter = `hue-rotate(${hue}deg)`;\n" &
+           "                    const label = document.createElement('div');\n" &
+           "                    label.style.position = 'absolute';\n" &
+           "                    label.style.fontSize = '10px';\n" &
+           "                    label.style.padding = '0 2px';\n" &
+           "                    label.textContent = `t${lastTerm}`;\n" &
+           "                    roleDiv.appendChild(label);\n" &
+           "                }\n" &
            "                roleDiv.style.left = `${left}%`;\n" &
            "                roleDiv.style.width = `${width}%`;\n" &
            "                roleDiv.title = `${lastRole} (term ${lastTerm}) (${lastTime}-${currentMaxTime}ms)`;\n" &

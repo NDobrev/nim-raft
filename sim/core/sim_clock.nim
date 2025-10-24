@@ -43,7 +43,8 @@ proc scheduleTimer*(clock: SimClock, delayMs: int64, callback: TimerCallback,
     generation: 0,  # Not used for now
     cancelled: false,
     periodic: periodic,
-    interval: interval
+    interval: interval,
+    nodeId: nodeId
   )
 
   let event = SimEvent(
@@ -109,7 +110,8 @@ proc tick*(clock: SimClock, dtMs: int64 = 1, deliverCallback: proc(event: SimEve
             generation: event.timer.generation,
             cancelled: false,
             periodic: true,
-            interval: event.timer.interval
+            interval: event.timer.interval,
+            nodeId: event.timer.nodeId
           )
           let newEvent = SimEvent(
             deliverAt: newDeadline,

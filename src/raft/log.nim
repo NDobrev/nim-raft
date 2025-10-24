@@ -2,15 +2,13 @@ import types
 import std/[strformat, options]
 import strutils
 
-# Global counter for simulation entry IDs (only used in sim mode)
-var nextEntryId* = 0
-
-func getNextEntryId*(): int =
+# Entry ID assignment for simulation (only used in sim mode)
+# Use log index as ID to ensure monotonic ordering across restarts
+func getNextEntryId*(logIndex: RaftLogIndex): int =
   when defined(sim):
-    {.noSideEffect.}:
-      nextEntryId.inc()
-      return nextEntryId
-  return 0
+    return logIndex.int
+  else:
+    return 0
 
 type
   RaftLogEntryType* = enum
@@ -131,6 +129,8 @@ func getEntryByIndex*(rf: RaftLog, index: RaftLogIndex): LogEntry =
   rf.logEntries[index - rf.firstIndex]
 
 func append(rf: var RaftLog, entry: LogEntry) =
+  doAssert entry.index == rf.nextIndex,
+    fmt"invalid log index: got {entry.index}, expected {rf.nextIndex}"
   rf.logEntries.add(entry)
   if entry.kind == rletConfig:
     rf.prevConfigIndex = rf.lastConfigIndex
@@ -144,6 +144,7 @@ func appendAsLeader*(rf: var RaftLog, entry: LogEntry) =
   rf.checkInvariant()
 
 func appendAsFollower*(rf: var RaftLog, entry: LogEntry) =
+  
   if entry.index < rf.firstIndex:
     return
   if entry.index <= rf.lastIndex:

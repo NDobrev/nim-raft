@@ -30,7 +30,14 @@ type
     votedFor*: Option[int]
     commitIndex*: uint64
     lastApplied*: uint64
+    # Current in-memory log length (may shrink due to compaction/snapshot)
     logLen*: int
+    # Absolute log indices for this node (snapshot-aware)
+    # firstLogIndex = snapshot.index + 1 when log is empty
+    # lastLogIndex  = max(snapshot.index, last entry.index)
+    firstLogIndex*: uint64
+    lastLogIndex*: uint64
+    alive*: bool
     nextIndex*: seq[JsonTableEntry]  # only for leaders
     matchIndex*: seq[JsonTableEntry]  # only for leaders
 
@@ -70,6 +77,7 @@ type
     entryIndex*: uint64
     entryTerm*: uint64
     entryData*: string
+    recommit*: bool
 
   JsonInvariantViolation* = object
     timeMs*: int64
@@ -97,6 +105,10 @@ type
     trace*: JsonTrace
     config*: ScenarioYaml
     seed*: uint64
+    # Monotonic trackers (by node id) to report ever-seen bounds across restarts/wipes
+    maxLastIdxByNode: Table[int, uint64]
+    # Per-node set of indices already seen committed (to flag recommits)
+    seenCommittedByNode: Table[int, Table[uint64, bool]]
 
 proc newJsonTraceWriter*(config: ScenarioYaml, seed: uint64): JsonTraceWriter =
   ## Create a new JSON trace writer
@@ -127,7 +139,9 @@ proc newJsonTraceWriter*(config: ScenarioYaml, seed: uint64): JsonTraceWriter =
   result = JsonTraceWriter(
     trace: trace,
     config: config,
-    seed: seed
+    seed: seed,
+    maxLastIdxByNode: initTable[int, uint64](),
+    seenCommittedByNode: initTable[int, Table[uint64, bool]]()
   )
 
 proc startTrace*(writer: JsonTraceWriter, startTime: int64) =
@@ -149,6 +163,19 @@ proc recordClusterState*(writer: JsonTraceWriter, timeMs: int64, nodes: seq[Node
     if state.role == Leader:
       leaderId = some(parseInt(state.id.id))
 
+    # Compute absolute log indices (snapshot-aware)
+    let hasLog = state.log.len > 0
+    let firstIdxAbs = (if hasLog: state.log[0].index.uint64 else: state.snapshotIndex.uint64 + 1'u64)
+    let lastIdxAbs = (if hasLog: state.log[^1].index.uint64 else: state.snapshotIndex.uint64)
+
+    # Enforce monotonic lastLogIndex per node across the whole run by tracking
+    # the maximum ever observed tail index, even if the node is wiped/restarted.
+    let nodeIdInt = parseInt(state.id.id)
+    var monotonicLast = lastIdxAbs
+    if writer.maxLastIdxByNode.hasKey(nodeIdInt):
+      monotonicLast = max(monotonicLast, writer.maxLastIdxByNode[nodeIdInt])
+    writer.maxLastIdxByNode[nodeIdInt] = monotonicLast
+
     var jsonNode = JsonNodeState(
       id: parseInt(state.id.id),
       role: roleStr,
@@ -156,7 +183,10 @@ proc recordClusterState*(writer: JsonTraceWriter, timeMs: int64, nodes: seq[Node
       votedFor: if state.votedFor.isSome: some(parseInt(state.votedFor.get.id)) else: none(int),
       commitIndex: state.commitIndex.uint64,
       lastApplied: state.lastApplied.uint64,
-      logLen: state.log.len
+      logLen: state.log.len,
+      firstLogIndex: firstIdxAbs,
+      lastLogIndex: monotonicLast,
+      alive: node.isAlive()
     )
 
     # Add leader-specific state
@@ -209,18 +239,21 @@ proc recordRpcEvent*(writer: JsonTraceWriter, timeMs: int64, rpc: RaftRpcMessage
   of VoteReply:
     rpcType = "RequestVoteReply"
     term = rpc.currentTerm.uint64
+    success = some(rpc.voteReply.voteGranted)
   of AppendRequest:
     rpcType = "AppendEntries"
     term = rpc.currentTerm.uint64
   of AppendReply:
     rpcType = "AppendEntriesReply"
     term = rpc.currentTerm.uint64
+    success = some(rpc.appendReply.result == Accepted)
   of InstallSnapshot:
     rpcType = "InstallSnapshot"
     term = rpc.currentTerm.uint64
   of SnapshotReply:
     rpcType = "InstallSnapshotReply"
     term = rpc.currentTerm.uint64
+    success = some(rpc.snapshotReply.success)
 
   let event = JsonRpcEvent(
     timeMs: timeMs,
@@ -285,15 +318,21 @@ proc recordCommittedEvent*(writer: JsonTraceWriter, timeMs: int64, nodeId: RaftN
                     $cast[string](entry.command.data)
                   else:
                     ""  # Config entries have no data
+  let idx = entry.index.uint64
+  let nid = parseInt(nodeId.id)
+  if not writer.seenCommittedByNode.hasKey(nid):
+    writer.seenCommittedByNode[nid] = initTable[uint64, bool]()
+  let wasSeen = writer.seenCommittedByNode[nid].hasKey(idx)
+  writer.seenCommittedByNode[nid][idx] = true
 
   let event = JsonCommittedEvent(
     timeMs: timeMs,
-    nodeId: parseInt(nodeId.id),
-    entryIndex: entry.index.uint64,
+    nodeId: nid,
+    entryIndex: idx,
     entryTerm: entry.term.uint64,
-    entryData: entryData
+    entryData: entryData,
+    recommit: wasSeen
   )
-
   writer.trace.committedEvents.add(event)
 
 proc finalizeMessageStats*(writer: JsonTraceWriter) =
