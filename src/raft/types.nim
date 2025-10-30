@@ -7,6 +7,8 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
+import std/hashes
+
 type
   RaftNodeId* = object
     id*: string # uuid4 uniquely identifying every Raft Node
@@ -30,3 +32,10 @@ proc empty*(t: typedesc[RaftNodeId]): RaftNodeId =
 
 proc newRaftNodeId*(s: string): RaftNodeId =
   RaftNodeId(id: s)
+
+# Ensure stable hashing/equality for use as Table keys
+proc `==`*(a, b: RaftNodeId): bool {.inline.} = a.id == b.id
+
+proc hash*(x: RaftNodeId): Hash {.inline.} =
+  ## Hash based on the node id string contents
+  result = hash(x.id)

@@ -40,8 +40,10 @@ type
     replayedIndex*: RaftLogIndex
     lastMessageAt*: times.DateTime
     lastReplyAt*: times.DateTime
+    hearthbeats*: int
     state*: RaftFollowerState
-    probeSent*: bool
+    probeSentAt*: times.DateTime
+    probeSentAtLeastOnce*: bool
     inFlight*: int
     maxInFlight*: int
 
@@ -145,7 +147,8 @@ func new*(
     lastMessageAt: now,
     lastReplyAt: now,  # Initialize to current time
     state: RaftFollowerState.Probe,
-    probeSent: false,
+    probeSentAt: now,
+    probeSentAtLeastOnce: false,
     inFlight: 0,
     maxInFlight: maxInFlight,
   )
@@ -154,6 +157,7 @@ func new*(
     T: type RaftFollowerProgressTrackerRef,
     follower: RaftNodeId,
     nextIndex: RaftLogIndex,
+    now: times.DateTime,
 ): T =
   T(
     id: follower,
@@ -162,7 +166,8 @@ func new*(
     commitIndex: 0,
     replayedIndex: 0,
     state: RaftFollowerState.Probe,
-    probeSent: false,
+    probeSentAt: now,
+    probeSentAtLeastOnce: false,
     inFlight: 0,
     maxInFlight: 10,  # Default value
   )
@@ -248,26 +253,29 @@ func accepted*(fpt: var RaftFollowerProgressTrackerRef, index: RaftLogIndex) =
   fpt.nextIndex = max(fpt.nextIndex, index + 1)
 
 # State transition methods
-func becomeProbe*(follower: RaftFollowerProgressTrackerRef) =
+func becomeProbe*(follower: RaftFollowerProgressTrackerRef, now: times.DateTime) =
+  if follower.state != RaftFollowerState.Probe:
+    follower.probeSentAt = now
+    follower.probeSentAtLeastOnce = false
   follower.state = RaftFollowerState.Probe
-  follower.probeSent = false
   follower.inFlight = 0 
 
-func becomePipeline*(follower: RaftFollowerProgressTrackerRef) =
+func becomePipeline*(follower: RaftFollowerProgressTrackerRef, now: times.DateTime) =
   if follower.state != RaftFollowerState.Pipeline:
     follower.state = RaftFollowerState.Pipeline
     follower.inFlight = 0
-    follower.probeSent = false  # probeSent is not used in PIPELINE mode
+    follower.probeSentAt = now
+    follower.probeSentAtLeastOnce = false
 
 func becomeSnapshot*(follower: RaftFollowerProgressTrackerRef, snapshotIndex: RaftLogIndex) =
   follower.state = RaftFollowerState.Snapshot
   follower.nextIndex = snapshotIndex + 1
 
 
-func canSendTo*(follower: RaftFollowerProgressTrackerRef): bool =
+func canSendTo*(follower: RaftFollowerProgressTrackerRef, now: times.DateTime): bool =
   case follower.state:
     of RaftFollowerState.Probe:
-      not follower.probeSent
+      (now - follower.probeSentAt).inMilliseconds > 50 or not follower.probeSentAtLeastOnce
     of RaftFollowerState.Pipeline:
       follower.inFlight < follower.maxInFlight
     of RaftFollowerState.Snapshot:

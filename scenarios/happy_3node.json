@@ -1,0 +1,61 @@
+{
+  "seed": 12345,
+  "cluster": {
+    "nodes": 3,
+    "election_timeout_ms": {
+      "min": 150,
+      "max": 300
+    },
+    "heartbeat_ms": 50
+  },
+  "storage": {
+    "durability": "Durable",
+    "snapshot": {
+      "enabled": false,
+      "max_log_entries": null,
+      "or_bytes": null,
+      "snapshot_each_ms": 500
+    }
+  },
+  "workload": {
+    "type": "kv",
+    "rate": {
+      "propose_per_tick": 1
+    },
+    "mix": {
+      "put": 90,
+      "get": 10
+    },
+    "keys": {
+      "space": 1000,
+      "zipf_s": 1.1
+    }
+  },
+  "net": {
+    "latency_ms": {
+      "base": 20,
+      "jitter": 10,
+      "p99": 120
+    },
+    "drop_pct": 2.0,
+    "dup_pct": 1.0,
+    "reorder_window": 5
+  },
+  "partitions": [],
+  "node_lifecycle": {
+    "restart_policies": []
+  },
+  "fuzz": {
+    "enabled": false,
+    "knobs": {}
+  },
+  "stop": {
+    "max_ms": 10000,
+    "min_commits": 1000,
+    "fail_fast": false
+  },
+  "artifacts": {
+    "html": "artifacts/happy_3node.html",
+    "json": "artifacts/happy_3node.json"
+  }
+}
