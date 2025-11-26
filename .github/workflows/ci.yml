@@ -79,6 +79,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386
           echo "ARCH_OVERRIDE=x86" >> $GITHUB_ENV
+          echo "CC=gcc -m32" >> $GITHUB_ENV
+          echo "CXX=g++ -m32" >> $GITHUB_ENV
       
       - name: Restore Nim build cache
         uses: actions/cache@v4
