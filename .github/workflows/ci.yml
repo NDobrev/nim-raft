@@ -14,10 +14,35 @@ jobs:
         target:
           - os: linux
             cpu: amd64
+          - os: linux
+            cpu: arm64
+          - os: macos
+            cpu: amd64
+          - os: macos
+            cpu: arm64
+          - os: windows
+            cpu: amd64
         include:
           - target:
               os: linux
+              cpu: amd64
             builder: ubuntu-22.04
+          - target:
+              os: linux
+              cpu: arm64
+            builder: ubuntu-22.04-arm64
+          - target:
+              os: macos
+              cpu: amd64
+            builder: macos-13
+          - target:
+              os: macos
+              cpu: arm64
+            builder: macos-14
+          - target:
+              os: windows
+              cpu: amd64
+            builder: windows-2022
     
     runs-on: ${{ matrix.builder }}
     
@@ -27,7 +52,14 @@ jobs:
         with:
           submodules: true
       
+      - name: Restore Nim build cache
+        uses: actions/cache@v4
+        with:
+          path: nim-build/cache
+          key: nim-${{ matrix.target.os }}-${{ matrix.target.cpu }}-version-2-2
+      
       - name: Setup Nim
+        shell: bash
         run: |
           export NIM_COMMIT="version-2-2"
           mkdir -p nim-build
