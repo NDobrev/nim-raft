@@ -8,6 +8,40 @@ on:
 
 jobs:
   build:
-    uses: status-im/nimbus-common-workflow/.github/workflows/common.yml@main
-    with:
-      nim_version: 'version-2-2'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: linux
+            cpu: amd64
+        include:
+          - target:
+              os: linux
+            builder: ubuntu-22.04
+    
+    runs-on: ${{ matrix.builder }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      
+      - name: Setup Nim
+        run: |
+          export NIM_COMMIT="version-2-2"
+          mkdir -p nim-build
+          bash scripts/ci/build_nim.sh nim-build/nim nim-build/csources nim-build/nimble nim-build/cache
+          echo "$PWD/nim-build/nim/bin" >> $GITHUB_PATH
+      
+      - name: Install dependencies
+        run: |
+          nimble install -y --depsOnly
+      
+      - name: Build
+        run: |
+          nimble build -y
+      
+      - name: Run tests
+        run: |
+          nimble test -y
