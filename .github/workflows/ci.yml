@@ -78,9 +78,19 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386
+          # Create wrapper scripts for 32-bit compilation
+          mkdir -p $HOME/bin
+          echo '#!/bin/bash' > $HOME/bin/gcc
+          echo 'exec /usr/bin/gcc -m32 "$@"' >> $HOME/bin/gcc
+          echo '#!/bin/bash' > $HOME/bin/g++
+          echo 'exec /usr/bin/g++ -m32 "$@"' >> $HOME/bin/g++
+          echo '#!/bin/bash' > $HOME/bin/cc
+          echo 'exec /usr/bin/gcc -m32 "$@"' >> $HOME/bin/cc
+          echo '#!/bin/bash' > $HOME/bin/c++
+          echo 'exec /usr/bin/g++ -m32 "$@"' >> $HOME/bin/c++
+          chmod +x $HOME/bin/gcc $HOME/bin/g++ $HOME/bin/cc $HOME/bin/c++
+          echo "$HOME/bin" >> $GITHUB_PATH
           echo "ARCH_OVERRIDE=x86" >> $GITHUB_ENV
-          echo "CC=gcc -m32" >> $GITHUB_ENV
-          echo "CXX=g++ -m32" >> $GITHUB_ENV
       
       - name: Restore Nim build cache
         uses: actions/cache@v4
