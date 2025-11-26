@@ -64,28 +64,47 @@ jobs:
         with:
           submodules: true
       
+      - name: Install GCC 14 (if needed)
+        if: matrix.target.gcc_ver == 14
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+      
+      - name: Setup 32-bit environment (if needed)
+        if: matrix.target.cpu == 'i386'
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386
+          echo "ARCH_OVERRIDE=x86" >> $GITHUB_ENV
+      
       - name: Restore Nim build cache
         uses: actions/cache@v4
         with:
           path: nim-build/cache
-          key: nim-${{ matrix.target.os }}-${{ matrix.target.cpu }}-version-2-2
+          key: nim-${{ matrix.target.os }}-${{ matrix.target.cpu }}-${{ matrix.target.gcc_ver || 'default' }}-${{ matrix.nim_version }}
       
       - name: Setup Nim
         shell: bash
         run: |
-          export NIM_COMMIT="version-2-2"
+          export NIM_COMMIT="${{ matrix.nim_version }}"
           mkdir -p nim-build
           bash scripts/ci/build_nim.sh nim-build/nim nim-build/csources nim-build/nimble nim-build/cache
           echo "$PWD/nim-build/nim/bin" >> $GITHUB_PATH
       
       - name: Install dependencies
+        shell: bash
         run: |
           nimble install -y --depsOnly
       
       - name: Build
+        shell: bash
         run: |
           nimble build -y
       
       - name: Run tests
+        shell: bash
         run: |
           nimble test -y
